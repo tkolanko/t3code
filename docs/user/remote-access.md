@@ -140,6 +140,24 @@ If SSH reconnecting fails after an app update, retry the launch once. Removing
 the connection stops a server that T3 Code launched; a server that was already
 running is left alone.
 
+## Mobile SSH
+
+On iOS or Android, open **Add environment → SSH** and enter a reachable SSH host,
+username, and pasted private key. Add the SSH port and key passphrase if needed.
+The phone must be able to reach that host and port directly; T3 Connect and
+Tailscale are not required. The remote machine needs the same T3 Code runtime
+prerequisites described above for desktop SSH.
+
+On first connection, compare the displayed host-key fingerprint with the host's
+fingerprint before choosing **Trust host**. A changed host key stops the
+connection. Check the host before removing and adding the environment again.
+
+The app stores the key on the phone for later connections. When the app resumes
+after being suspended or the network changes, open the environment and use
+**Reconnect** if it has not reconnected yet. Switching the environment off
+closes the phone's SSH tunnel; removing it also deletes its saved private key.
+The remote T3 Code server stays available after the phone disconnects.
+
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
 

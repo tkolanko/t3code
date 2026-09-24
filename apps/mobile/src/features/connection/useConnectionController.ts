@@ -14,8 +14,11 @@ import { useCallback, useMemo } from "react";
 import { environmentCatalog } from "../../connection/catalog";
 import {
   connectPairingUrl as connectPairingUrlAtom,
+  connectSshEnvironment as connectSshEnvironmentAtom,
   updateBearerConnection,
 } from "../../connection/onboarding";
+import { stageMobileSshCredentials } from "../../ssh/gateway";
+import { parseMobileSshInput, type MobileSshFormInput } from "../../ssh/input";
 import { useEnvironments } from "../../state/environments";
 import { relayEnvironmentDiscovery } from "../../state/relay";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -34,6 +37,9 @@ export function useConnectionController() {
   const { environments } = useEnvironments();
   const discovery = useAtomValue(relayEnvironmentDiscovery.stateValueAtom);
   const connectPairingUrlMutation = useAtomCommand(connectPairingUrlAtom, {
+    reportFailure: false,
+  });
+  const connectSshMutation = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
   });
   const updateBearer = useAtomCommand(updateBearerConnection, { reportFailure: false });
@@ -76,6 +82,14 @@ export function useConnectionController() {
   const connectPairingUrl = useCallback(
     (pairingUrl: string) => connectPairingUrlMutation(pairingUrl),
     [connectPairingUrlMutation],
+  );
+  const connectSshEnvironment = useCallback(
+    (input: MobileSshFormInput) => {
+      const parsed = parseMobileSshInput(input);
+      stageMobileSshCredentials(parsed.target, parsed.credentials, input.signal);
+      return connectSshMutation({ target: parsed.target, signal: input.signal });
+    },
+    [connectSshMutation],
   );
   const connectRelayEnvironment = useCallback(
     (environment: RelayClientEnvironmentRecord) =>
@@ -126,6 +140,7 @@ export function useConnectionController() {
       errorTraceId: Option.getOrNull(discovery.error)?.traceId ?? null,
     },
     connectPairingUrl,
+    connectSshEnvironment,
     connectRelayEnvironment,
     removeEnvironment,
     retryEnvironment,

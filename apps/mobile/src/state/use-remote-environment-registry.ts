@@ -94,6 +94,7 @@ export function useRemoteConnectionStatus() {
         environmentLabel: environment.environmentLabel,
         displayUrl: environment.displayUrl,
         isRelayManaged: environment.isRelayManaged,
+        isSsh: environment.isSsh,
         isEnabled: environment.isEnabled,
         connectionState: environment.connectionState,
         connectionError: environment.connectionError,

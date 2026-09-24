@@ -22,6 +22,21 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as CatalogStore from "./catalog-store";
+import { disconnectMobileSshEnvironment, mobileSshSecrets } from "../ssh/manager";
+import { cleanupPreviousSsh } from "../ssh/cleanup";
+import { markStagedMobileSshCommitted } from "../ssh/gateway";
+
+const sshCleanupActions = {
+  disconnect: disconnectMobileSshEnvironment,
+  removeCredentials: mobileSshSecrets.removeCredentials,
+  removeTrustedKey: mobileSshSecrets.removeTrustedKey,
+};
+
+function reportSshCleanupError(): void {
+  // The catalog mutation has already committed. Reporting failure would cause
+  // onboarding to discard the new key while leaving its catalog entry saved.
+  console.warn("Could not finish cleaning up a previous SSH connection.");
+}
 
 function targetPersistenceError(
   operation:
@@ -59,13 +74,39 @@ export const connectionStorageLayer = Layer.effectContext(
     });
     const registrationStore = ConnectionRegistrationStore.of({
       register: (registration) =>
-        catalog
-          .update((document) => registerConnectionInCatalog(document, registration))
-          .pipe(Effect.mapError((error) => targetPersistenceError("register-connection", error))),
+        Effect.gen(function* () {
+          const previous = yield* catalog.read;
+          yield* catalog.update((document) => registerConnectionInCatalog(document, registration));
+          if (registration._tag === "SshConnectionRegistration") {
+            yield* Effect.sync(() =>
+              markStagedMobileSshCommitted(
+                registration.profile.target,
+                registration.target.connectionId,
+              ),
+            );
+          }
+          const next = yield* catalog.read;
+          yield* Effect.tryPromise({
+            try: () =>
+              cleanupPreviousSsh(
+                previous,
+                next,
+                registration.target.environmentId,
+                sshCleanupActions,
+              ),
+            catch: () => new Error("SSH cleanup failed"),
+          }).pipe(Effect.catch(() => Effect.sync(reportSshCleanupError)));
+        }).pipe(Effect.mapError((error) => targetPersistenceError("register-connection", error))),
       remove: (target) =>
-        catalog
-          .update((document) => removeConnectionFromCatalog(document, target))
-          .pipe(Effect.mapError((error) => targetPersistenceError("remove-connection", error))),
+        Effect.gen(function* () {
+          const previous = yield* catalog.read;
+          yield* catalog.update((document) => removeConnectionFromCatalog(document, target));
+          const next = yield* catalog.read;
+          yield* Effect.tryPromise({
+            try: () => cleanupPreviousSsh(previous, next, target.environmentId, sshCleanupActions),
+            catch: () => new Error("SSH cleanup failed"),
+          }).pipe(Effect.catch(() => Effect.sync(reportSshCleanupError)));
+        }).pipe(Effect.mapError((error) => targetPersistenceError("remove-connection", error))),
       setEnabled: (environmentId, enabled) =>
         catalog
           .update((document) => setConnectionEnabledInCatalog(document, environmentId, enabled))

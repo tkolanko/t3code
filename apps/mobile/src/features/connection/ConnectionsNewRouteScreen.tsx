@@ -8,7 +8,7 @@ import {
 } from "@react-navigation/native";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Linking, Platform, View } from "react-native";
+import { Alert, Linking, Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
@@ -18,6 +18,7 @@ import { ConnectionFormField } from "./ConnectionFormField";
 import { ConnectionSheetButton } from "./ConnectionSheetButton";
 import { buildPairingUrl, extractPairingUrlFromQrPayload, parsePairingUrl } from "./pairing";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
+import { MobileSshConnectionForm } from "./MobileSshConnectionForm";
 
 type ConnectionsNewRouteParams = {
   readonly mode?: string;
@@ -48,6 +49,9 @@ export function ConnectionsNewRouteScreen({
   const [hostInput, setHostInput] = useState("");
   const [codeInput, setCodeInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [connectionMethod, setConnectionMethod] = useState<"pairing" | "ssh">(
+    params.mode === "ssh" ? "ssh" : "pairing",
+  );
   const [showScanner, setShowScanner] = useState(params.mode === "scan_qr");
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [scannerLocked, setScannerLocked] = useState(false);
@@ -177,6 +181,11 @@ export function ConnectionsNewRouteScreen({
     await connectAndClose(buildPairingUrl(hostInput, codeInput), false);
   }, [codeInput, connectAndClose, hostInput]);
 
+  const closeAfterSshConnection = useCallback(() => {
+    if (navigation.canGoBack()) navigation.goBack();
+    else navigation.dispatch(StackActions.replace("Home"));
+  }, [navigation]);
+
   useEffect(() => {
     if (!shouldAutoConnect || attemptedAutoConnectRef.current === routePairingUrl) {
       return;
@@ -190,20 +199,28 @@ export function ConnectionsNewRouteScreen({
     <SettingsScreen
       formSheet={routeName === "ConnectionsNew"}
       title={showScanner ? "Scan QR Code" : "Add Environment"}
-      actions={[
-        {
-          accessibilityLabel: showScanner ? "Close scanner" : "Scan QR code",
-          icon: showScanner ? "xmark" : Platform.OS === "ios" ? "qrcode.viewfinder" : "camera",
-          tintColor: headerIconColor,
-          onPress: () => {
-            if (showScanner) {
-              closeScanner();
-            } else {
-              void openScanner();
-            }
-          },
-        },
-      ]}
+      actions={
+        connectionMethod === "ssh"
+          ? []
+          : [
+              {
+                accessibilityLabel: showScanner ? "Close scanner" : "Scan QR code",
+                icon: showScanner
+                  ? "xmark"
+                  : Platform.OS === "ios"
+                    ? "qrcode.viewfinder"
+                    : "camera",
+                tintColor: headerIconColor,
+                onPress: () => {
+                  if (showScanner) {
+                    closeScanner();
+                  } else {
+                    void openScanner();
+                  }
+                },
+              },
+            ]
+      }
     >
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
@@ -216,6 +233,33 @@ export function ConnectionsNewRouteScreen({
         }}
       >
         <View collapsable={false} className="gap-5">
+          {!showScanner ? (
+            <View className="flex-row gap-2">
+              {(["pairing", "ssh"] as const).map((method) => (
+                <Pressable
+                  key={method}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: connectionMethod === method }}
+                  className={
+                    connectionMethod === method
+                      ? "rounded-[12px] bg-primary px-4 py-2.5"
+                      : "rounded-[12px] bg-card px-4 py-2.5"
+                  }
+                  onPress={() => setConnectionMethod(method)}
+                >
+                  <Text
+                    className={
+                      connectionMethod === method
+                        ? "text-xs font-t3-bold text-primary-foreground"
+                        : "text-xs font-t3-bold text-foreground"
+                    }
+                  >
+                    {method === "ssh" ? "SSH" : "Pairing code"}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
           {showScanner ? (
             cameraPermission?.granted ? (
               <View className="overflow-hidden rounded-[24px] border-continuous">
@@ -241,6 +285,8 @@ export function ConnectionsNewRouteScreen({
                 />
               </View>
             )
+          ) : connectionMethod === "ssh" ? (
+            <MobileSshConnectionForm onConnected={closeAfterSshConnection} />
           ) : (
             <View collapsable={false} className="gap-4 rounded-[24px] bg-card p-4">
               <ConnectionFormField

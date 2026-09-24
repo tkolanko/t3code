@@ -158,6 +158,11 @@ export function ConnectionEnvironmentRow(props: {
             <Text className="text-sm text-foreground-muted">
               Managed by T3 Connect. Tunnel details update automatically.
             </Text>
+          ) : props.environment.isSsh ? (
+            <Text className="text-sm text-foreground-muted">
+              SSH connection to {props.environment.displayUrl}. The private key is stored on this
+              device.
+            </Text>
           ) : (
             <>
               <ConnectionFormField
@@ -183,7 +188,7 @@ export function ConnectionEnvironmentRow(props: {
 
           {Platform.OS === "android" ? (
             <View className="flex-row items-center justify-end gap-2">
-              {props.environment.isRelayManaged ? null : (
+              {props.environment.isRelayManaged || props.environment.isSsh ? null : (
                 <View className="flex-1">
                   <MaterialButton
                     label="Save"
@@ -211,7 +216,7 @@ export function ConnectionEnvironmentRow(props: {
             </View>
           ) : (
             <View className="flex-row justify-end gap-2">
-              {props.environment.isRelayManaged ? null : (
+              {props.environment.isRelayManaged || props.environment.isSsh ? null : (
                 <Pressable
                   className="min-h-[42px] flex-1 flex-row items-center justify-center gap-1.5 rounded-[14px] bg-primary px-3.5 py-2.5 active:opacity-70"
                   onPress={handleSave}

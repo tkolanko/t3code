@@ -10,6 +10,7 @@ export interface WorkspaceEnvironment {
   readonly environmentLabel: string;
   readonly displayUrl: string;
   readonly isRelayManaged: boolean;
+  readonly isSsh?: boolean;
   readonly isEnabled: boolean;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
@@ -39,6 +40,7 @@ export function projectWorkspaceEnvironment(
     environmentLabel: environment.label,
     displayUrl: environment.displayUrl ?? "",
     isRelayManaged: environment.relayManaged,
+    isSsh: environment.entry.target._tag === "SshConnectionTarget",
     isEnabled: environment.entry.enabled,
     connectionState: environment.connection.phase,
     connectionError: environment.connection.error,

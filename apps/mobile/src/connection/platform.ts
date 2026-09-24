@@ -33,6 +33,7 @@ import { clearThreadOutboxEnvironment } from "../state/thread-outbox-removal";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
 import { connectionStorageLayer } from "./storage";
+import { mobileSshGateway } from "../ssh/gateway";
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
   if (state.isConnected === false) {
@@ -174,26 +175,7 @@ const capabilitiesLayer = Layer.effectContext(
           scopes: AuthStandardClientScopes,
         }),
       ),
-      Context.add(
-        SshEnvironmentGateway,
-        SshEnvironmentGateway.of({
-          provision: () =>
-            Effect.fail(
-              new ConnectionBlockedError({
-                reason: "unsupported",
-                detail: "SSH environments are only available in the desktop app.",
-              }),
-            ),
-          prepare: () =>
-            Effect.fail(
-              new ConnectionBlockedError({
-                reason: "unsupported",
-                detail: "SSH environments are only available in the desktop app.",
-              }),
-            ),
-          disconnect: () => Effect.void,
-        }),
-      ),
+      Context.add(SshEnvironmentGateway, mobileSshGateway),
     );
   }),
 );
