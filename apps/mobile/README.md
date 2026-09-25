@@ -91,6 +91,17 @@ T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.example.t3code \
 vp run ios:release
 ```
 
+To install that Release build on a connected iPhone from the command line, and keep it installed,
+set `T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID` in the repo `.env` and run:
+
+```bash
+scripts/ios-personal-device.sh              # merge upstream/main, then build and install
+scripts/ios-personal-device.sh --no-update  # build and install the current checkout
+```
+
+It signs with your Xcode account's team, so you do not need to pick one in Xcode. Personal Team
+signing expires after 7 days; rerun the script before then.
+
 Build and run the local iOS preview app:
 
 ```bash
