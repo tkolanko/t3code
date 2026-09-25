@@ -35,19 +35,36 @@ DEVICE_ID="${T3_IOS_DEVICE_ID:-}"
 if [[ -z "$DEVICE_ID" ]]; then
   devices_json="$(mktemp)"
   xcrun devicectl list devices --json-output "$devices_json" >/dev/null
-  DEVICE_ID="$(python3 - "$devices_json" <<'EOF'
+  # devicectl also lists paired phones that are out of reach; those have no transport.
+  # Prefer a cable over Wi-Fi when both are available.
+  selected="$(python3 - "$devices_json" <<'EOF'
 import json, sys
-for d in json.load(open(sys.argv[1]))["result"]["devices"]:
-    hw = d.get("hardwareProperties", {})
-    if hw.get("platform") == "iOS" and hw.get("reality") == "physical" and hw.get("udid"):
-        print(hw["udid"])
-        break
+rank = {"wired": 0, "localNetwork": 1}
+phones = [
+    (rank[d["connectionProperties"]["transportType"]], d["hardwareProperties"]["udid"],
+     d["connectionProperties"]["transportType"])
+    for d in json.load(open(sys.argv[1]))["result"]["devices"]
+    if d.get("hardwareProperties", {}).get("platform") == "iOS"
+    and d["hardwareProperties"].get("reality") == "physical"
+    and d.get("connectionProperties", {}).get("transportType") in rank
+]
+if phones:
+    print(*min(phones)[1:])
 EOF
 )"
+  read -r DEVICE_ID DEVICE_TRANSPORT <<<"$selected" || true
   rm -f "$devices_json"
 fi
-[[ -n "$DEVICE_ID" ]] || fail "No iPhone found. Connect and unlock it, then run again."
-echo "Device $DEVICE_ID, team $TEAM_ID"
+[[ -n "$DEVICE_ID" ]] || fail "No reachable iPhone. Connect it by cable (or join the same Wi-Fi), unlock it, and run again."
+echo "Device $DEVICE_ID (${DEVICE_TRANSPORT:-set by T3_IOS_DEVICE_ID}), team $TEAM_ID"
+
+# The device list can report a stale Wi-Fi connection, and a phone that sleeps during the
+# build drops it. Listing apps needs a live connection, so it both checks and reopens one.
+wait_for_phone() {
+  xcrun devicectl device info apps --device "$DEVICE_ID" --timeout 60 --quiet >/dev/null 2>&1 \
+    || fail "The iPhone did not respond. Connect it by cable (or wake it on the same Wi-Fi), unlock it, and run again."
+}
+wait_for_phone
 
 if [[ "$UPDATE" == 1 ]]; then
   git remote get-url "$UPSTREAM" >/dev/null 2>&1 \
@@ -85,6 +102,7 @@ fi
 
 APP="$(ls -d ios/build/Build/Products/Release-iphoneos/*.app | head -1)"
 step "Installing $(basename "$APP") on the iPhone"
+wait_for_phone
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP"
 
 step "Done. Personal Team signing expires in 7 days."
