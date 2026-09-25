@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it } from "@effect/vitest";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { vi } from "vite-plus/test";
 
 const harness = vi.hoisted(() => ({
   saved: new Map<string, unknown>(),
+  bearers: new Map<string, string>(),
+  acceptsBearer: true,
   ensures: [] as Array<{ target: unknown; issuePairingToken: boolean }>,
   disconnected: [] as unknown[],
 }));
@@ -17,6 +20,7 @@ vi.mock("@t3tools/client-runtime/environment", () => ({
 }));
 vi.mock("@t3tools/client-runtime/authorization", () => ({
   bootstrapRemoteBearerSession: () => Effect.succeed({ access_token: "bearer-token" }),
+  fetchRemoteSessionState: () => Effect.succeed({ authenticated: harness.acceptsBearer }),
 }));
 vi.mock("@t3tools/client-runtime/rpc", () => ({ remoteHttpClientLayer: () => Layer.empty }));
 vi.mock("./manager", () => ({
@@ -45,6 +49,11 @@ vi.mock("./manager", () => ({
     loadCredentials: async (id: string) => harness.saved.get(id) ?? null,
     removeCredentials: async (id: string) => {
       harness.saved.delete(id);
+      harness.bearers.delete(id);
+    },
+    loadBearerToken: async (id: string) => harness.bearers.get(id) ?? null,
+    saveBearerToken: async (id: string, token: string) => {
+      harness.bearers.set(id, token);
     },
   },
 }));
@@ -68,6 +77,8 @@ const credentials = {
 describe("mobile SSH gateway", () => {
   beforeEach(() => {
     harness.saved.clear();
+    harness.bearers.clear();
+    harness.acceptsBearer = true;
     harness.ensures.length = 0;
     harness.disconnected.length = 0;
   });
@@ -90,8 +101,27 @@ describe("mobile SSH gateway", () => {
           target,
         });
         expect(prepared.bootstrap.httpBaseUrl).toBe("http://127.0.0.1:4000/");
-        expect(harness.ensures).toHaveLength(2);
+        expect(prepared.bearerToken).toBe("bearer-token");
+        expect(harness.ensures.map((ensure) => ensure.issuePairingToken)).toEqual([true, false]);
       }),
+  );
+
+  it.effect("pairs again only when the saved bearer token is rejected", () =>
+    Effect.gen(function* () {
+      harness.saved.set("ssh:environment-1", credentials);
+      harness.bearers.set("ssh:environment-1", "revoked-token");
+      harness.acceptsBearer = false;
+
+      const prepared = yield* mobileSshGateway.prepare({
+        connectionId: "ssh:environment-1",
+        expectedEnvironmentId: EnvironmentId.make("environment-1"),
+        target,
+      });
+
+      expect(prepared.bearerToken).toBe("bearer-token");
+      expect(harness.bearers.get("ssh:environment-1")).toBe("bearer-token");
+      expect(harness.ensures.map((ensure) => ensure.issuePairingToken)).toEqual([false, true]);
+    }),
   );
 
   it.effect("removes staged credentials and closes the tunnel after failed onboarding", () =>

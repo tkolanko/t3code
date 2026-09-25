@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   launchScripts: [] as string[],
   openedPrivateKeys: [] as string[],
   forwards: [] as Array<{ isOpen: boolean; localPort: number; close: () => Promise<void> }>,
+  sessions: [] as Array<{ connection: { isConnected: boolean } }>,
 }));
 
 vi.mock("expo-constants", () => ({
@@ -42,16 +43,9 @@ vi.mock("./transport", () => ({
     if (harness.presentedKey && !(await verifyHostKey(harness.presentedKey))) {
       throw new Error("Host key rejected");
     }
-    const forward = {
-      isOpen: true,
-      localPort: 4000 + harness.opens,
-      close: async () => {
-        forward.isOpen = false;
-      },
-    };
-    harness.forwards.push(forward);
-    return {
+    const session = {
       connection: { isConnected: true },
+      forwards: [] as Array<{ isOpen: boolean; close: () => Promise<void> }>,
       runScript: async (script: string) => {
         if (!script.includes("auth pairing create")) harness.launchScripts.push(script);
         return {
@@ -61,12 +55,26 @@ vi.mock("./transport", () => ({
           stderr: "",
         };
       },
-      forwardLoopback: async () => forward,
+      forwardLoopback: async () => {
+        const forward = {
+          isOpen: true,
+          localPort: 4001 + harness.forwards.length,
+          close: async () => {
+            forward.isOpen = false;
+          },
+        };
+        harness.forwards.push(forward);
+        session.forwards.push(forward);
+        return forward;
+      },
       close: async () => {
         harness.closes += 1;
-        await forward.close();
+        session.connection.isConnected = false;
+        await Promise.all(session.forwards.map((forward) => forward.close()));
       },
     };
+    harness.sessions.push(session);
+    return session;
   },
 }));
 
@@ -94,6 +102,7 @@ afterEach(async () => {
   harness.launchScripts = [];
   harness.openedPrivateKeys = [];
   harness.forwards = [];
+  harness.sessions = [];
   vi.unstubAllGlobals();
 });
 
@@ -111,19 +120,45 @@ describe("mobile SSH tunnel manager", () => {
     expect(harness.launchScripts[0]).toContain("T3_ARCHIVE_VERSION='0.0.42'");
   });
 
-  it("closes a stale forward before reconnecting and releases resources on disconnect", async () => {
+  it("reopens only the forward when the SSH session survived", async () => {
     vi.stubGlobal("fetch", async () => ({ ok: true }));
     await ensureMobileSshEnvironment(target, credentials, false);
     harness.forwards[0]!.isOpen = false;
     const renewed = await ensureMobileSshEnvironment(target, credentials, false);
 
     expect(renewed.httpBaseUrl).toBe("http://127.0.0.1:4002/");
-    expect(harness.opens).toBe(2);
-    expect(harness.closes).toBe(1);
+    expect(harness.opens).toBe(1);
+    expect(harness.closes).toBe(0);
+    expect(harness.launchScripts).toHaveLength(1);
 
     await disconnectMobileSshEnvironment(target);
-    expect(harness.closes).toBe(2);
+    expect(harness.closes).toBe(1);
     expect(harness.forwards[1]!.isOpen).toBe(false);
+  });
+
+  it("reconnects a dropped session straight to the known remote port", async () => {
+    vi.stubGlobal("fetch", async () => ({ ok: true }));
+    await ensureMobileSshEnvironment(target, credentials, false);
+    harness.sessions[0]!.connection.isConnected = false;
+    const renewed = await ensureMobileSshEnvironment(target, credentials, false);
+
+    expect(renewed.remotePort).toBe(3773);
+    expect(harness.opens).toBe(2);
+    expect(harness.launchScripts).toHaveLength(1);
+  });
+
+  it("relaunches on a fresh session when the known port stops answering", async () => {
+    let answeringAfterLaunches = 1;
+    vi.stubGlobal("fetch", async () => ({
+      ok: harness.launchScripts.length >= answeringAfterLaunches,
+    }));
+    await ensureMobileSshEnvironment(target, credentials, false);
+    answeringAfterLaunches = 2;
+    await ensureMobileSshEnvironment(target, credentials, false);
+
+    expect(harness.launchScripts).toHaveLength(2);
+    expect(harness.opens).toBe(2);
+    expect(harness.closes).toBe(1);
   });
 
   it("authenticates a changed private key instead of reusing the old tunnel", async () => {

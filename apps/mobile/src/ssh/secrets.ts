@@ -18,6 +18,7 @@ export interface TrustedSshHostKey {
 
 const credentialPrefix = "t3.ssh.credential.";
 const trustPrefix = "t3.ssh.host.";
+const bearerPrefix = "t3.ssh.bearer.";
 
 export function sshHostIdentity(host: string, port: number): string {
   return `${host.trim().toLowerCase()}\u0000${port}`;
@@ -75,14 +76,25 @@ export function makeSshSecretStore(
   const keyFor = async (prefix: string, value: string) => `${prefix}${await digest(value)}`;
   const credentialKey = (connectionId: string) => keyFor(credentialPrefix, connectionId);
   const trustKey = (host: string, port: number) => keyFor(trustPrefix, sshHostIdentity(host, port));
+  const bearerKey = (connectionId: string) => keyFor(bearerPrefix, connectionId);
 
   return {
     loadCredentials: async (connectionId: string) =>
       parseCredentials(await storage.getItemAsync(await credentialKey(connectionId))),
     saveCredentials: async (connectionId: string, credentials: MobileSshCredentials) =>
       storage.setItemAsync(await credentialKey(connectionId), JSON.stringify(credentials)),
-    removeCredentials: async (connectionId: string) =>
-      storage.deleteItemAsync(await credentialKey(connectionId)),
+    removeCredentials: async (connectionId: string) => {
+      await storage.deleteItemAsync(await credentialKey(connectionId));
+      await storage.deleteItemAsync(await bearerKey(connectionId));
+    },
+    // The bearer token from the last pairing, reused on reconnect so the host
+    // does not start the t3 CLI to pair again every time the app resumes.
+    loadBearerToken: async (connectionId: string) =>
+      storage.getItemAsync(await bearerKey(connectionId)),
+    saveBearerToken: async (connectionId: string, token: string) =>
+      storage.setItemAsync(await bearerKey(connectionId), token),
+    removeBearerToken: async (connectionId: string) =>
+      storage.deleteItemAsync(await bearerKey(connectionId)),
     loadTrustedKey: async (host: string, port: number) =>
       parseTrustedKey(await storage.getItemAsync(await trustKey(host, port))),
     saveTrustedKey: async (host: string, port: number, key: SshHostKey) =>

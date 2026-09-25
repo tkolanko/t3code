@@ -47,8 +47,13 @@ describe("mobile SSH secrets", () => {
     expect([...memory.items.keys()]).toHaveLength(1);
     expect([...memory.items.keys()][0]).not.toContain("environment-1");
 
+    await secrets.saveBearerToken("ssh:environment-1", "bearer-secret");
+    expect(await secrets.loadBearerToken("ssh:environment-1")).toBe("bearer-secret");
+
     await secrets.removeCredentials("ssh:environment-1");
     expect(await secrets.loadCredentials("ssh:environment-1")).toBeNull();
+    expect(await secrets.loadBearerToken("ssh:environment-1")).toBeNull();
+    expect(memory.items.size).toBe(0);
   });
 
   it("pins the full host key for a host and port and rejects a replacement", async () => {

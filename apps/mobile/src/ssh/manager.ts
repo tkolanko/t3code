@@ -40,6 +40,12 @@ interface SshEntry {
 const secrets = makeSshSecretStore();
 const entries = new Map<string, SshEntry>();
 const pending = new Map<string, Promise<SshEntry>>();
+// Outlives failed attempts so a reconnect after a network drop can go straight
+// to the remote server instead of rerunning the launch script.
+const lastRemote = new Map<
+  string,
+  Pick<SshEntry, "remotePort" | "remoteServerKind" | "credentialFingerprint">
+>();
 let trustDecision: HostTrustDecision | null = null;
 
 export class SshHostKeyChangedError extends Error {
@@ -113,12 +119,19 @@ async function verifyHostKey(
   return true;
 }
 
+const HEALTH_TIMEOUT_MS = 2_000;
+const STALE_CLOSE_TIMEOUT_MS = 1_000;
+
+// Hits the environment descriptor so a reused port is proven to still be a T3
+// server, not just any listener.
 async function healthy(entry: SshEntry): Promise<boolean> {
   if (!entry.session.connection.isConnected || !entry.forward.isOpen) return false;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2_000);
+  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
   try {
-    const response = await fetch(entry.httpBaseUrl, { signal: controller.signal });
+    const response = await fetch(`${entry.httpBaseUrl}.well-known/t3/environment`, {
+      signal: controller.signal,
+    });
     return response.ok;
   } catch {
     return false;
@@ -127,17 +140,68 @@ async function healthy(entry: SshEntry): Promise<boolean> {
   }
 }
 
-async function createEntry(
+// A session that died while the app was suspended can block on disconnect, so
+// never let closing it hold up the replacement.
+function closeStale(session: MobileSshSession): Promise<void> {
+  return Promise.race([
+    session.close().catch(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, STALE_CLOSE_TIMEOUT_MS)),
+  ]);
+}
+
+async function forwardTo(
+  base: Pick<SshEntry, "session" | "credentialFingerprint" | "remoteServerKind">,
+  remotePort: number,
+  signal?: AbortSignal,
+): Promise<SshEntry | null> {
+  const forward = await base.session.forwardLoopback(remotePort);
+  throwIfSshAborted(signal);
+  const entry: SshEntry = {
+    ...base,
+    forward,
+    remotePort,
+    httpBaseUrl: `http://127.0.0.1:${forward.localPort}/`,
+    wsBaseUrl: `ws://127.0.0.1:${forward.localPort}/`,
+  };
+  if (await healthy(entry)) return entry;
+  await forward.close().catch(() => undefined);
+  return null;
+}
+
+async function launchAndForward(
   target: DesktopSshEnvironmentTarget,
-  credentials: MobileSshCredentials,
+  session: MobileSshSession,
   fingerprint: string,
   signal?: AbortSignal,
 ): Promise<SshEntry> {
+  const launch = await session.runScript(
+    buildRemoteLaunchScript(remoteRunner()),
+    [await stateKey(target)],
+    { loginShell: true, ...(signal ? { signal } : {}) },
+  );
+  throwIfSshAborted(signal);
+  const parsed = await Effect.runPromise(decodeRemoteLaunchOutput(launch.stdout));
+  if (!Number.isInteger(parsed.remotePort) || parsed.remotePort < 1 || parsed.remotePort > 65535) {
+    throw new Error("The SSH host returned an invalid T3 server port.");
+  }
+  const entry = await forwardTo(
+    { session, credentialFingerprint: fingerprint, remoteServerKind: parsed.serverKind ?? null },
+    parsed.remotePort,
+    signal,
+  );
+  if (!entry) throw new Error("The remote T3 server did not respond through SSH.");
+  return entry;
+}
+
+async function openSession(
+  credentials: MobileSshCredentials,
+  signal?: AbortSignal,
+): Promise<MobileSshSession> {
   throwIfSshAborted(signal);
   let changedKey: SshHostKeyChangedError | null = null;
   const pinnedKey = await secrets.loadTrustedKey(credentials.host, credentials.port);
   throwIfSshAborted(signal);
-  const session = await openMobileSshSession(
+  return openMobileSshSession(
     credentials,
     (key) =>
       verifyHostKey(
@@ -154,38 +218,46 @@ async function createEntry(
     if (changedKey) throw changedKey;
     throw error;
   });
-  try {
-    const launch = await session.runScript(
-      buildRemoteLaunchScript(remoteRunner()),
-      [await stateKey(target)],
-      signal,
-    );
-    throwIfSshAborted(signal);
-    const parsed = await Effect.runPromise(decodeRemoteLaunchOutput(launch.stdout));
-    if (
-      !Number.isInteger(parsed.remotePort) ||
-      parsed.remotePort < 1 ||
-      parsed.remotePort > 65535
-    ) {
-      throw new Error("The SSH host returned an invalid T3 server port.");
+}
+
+// Recovers in the cheapest order: a new forward on the live session, then a
+// new session to the last known remote port, and only then the launch script.
+// The remote server outlives the SSH session, so a resume rarely needs launch.
+async function recoverEntry(
+  target: DesktopSshEnvironmentTarget,
+  credentials: MobileSshCredentials,
+  fingerprint: string,
+  previous: SshEntry | undefined,
+  signal?: AbortSignal,
+): Promise<SshEntry> {
+  const known = lastRemote.get(targetKey(target));
+  const resume = (session: MobileSshSession) =>
+    known?.credentialFingerprint === fingerprint
+      ? forwardTo(
+          { session, credentialFingerprint: fingerprint, remoteServerKind: known.remoteServerKind },
+          known.remotePort,
+          signal,
+        )
+      : Promise.resolve(null);
+
+  if (previous) {
+    if (previous.credentialFingerprint === fingerprint && previous.session.connection.isConnected) {
+      await previous.forward.close().catch(() => undefined);
+      const resumed = await resume(previous.session).catch(() => null);
+      if (resumed) return resumed;
     }
-    const forward = await session.forwardLoopback(parsed.remotePort);
-    throwIfSshAborted(signal);
-    const httpBaseUrl = `http://127.0.0.1:${forward.localPort}/`;
-    const entry: SshEntry = {
-      session,
-      credentialFingerprint: fingerprint,
-      forward,
-      remotePort: parsed.remotePort,
-      remoteServerKind: parsed.serverKind ?? null,
-      httpBaseUrl,
-      wsBaseUrl: `ws://127.0.0.1:${forward.localPort}/`,
-    };
-    if (!(await healthy(entry)))
-      throw new Error("The remote T3 server did not respond through SSH.");
-    return entry;
+    // A session that answers nothing may be half-dead after suspension, so
+    // the launch script runs on a fresh one rather than hanging on it.
+    void closeStale(previous.session);
+  }
+
+  const session = await openSession(credentials, signal);
+  try {
+    return (
+      (await resume(session)) ?? (await launchAndForward(target, session, fingerprint, signal))
+    );
   } catch (error) {
-    await session.close();
+    await closeStale(session);
     throw error;
   }
 }
@@ -211,13 +283,11 @@ async function ensureEntry(
     if (existing && existing.credentialFingerprint === fingerprint && (await healthy(existing))) {
       return existing;
     }
-    if (existing) {
-      entries.delete(key);
-      await existing.session.close();
-    }
-    const created = await createEntry(target, credentials, fingerprint, signal);
-    entries.set(key, created);
-    return created;
+    entries.delete(key);
+    const recovered = await recoverEntry(target, credentials, fingerprint, existing, signal);
+    entries.set(key, recovered);
+    lastRemote.set(key, recovered);
+    return recovered;
   })();
   pending.set(key, operation);
   try {
@@ -240,7 +310,7 @@ export async function ensureMobileSshEnvironment(
     const result = await entry.session.runScript(
       buildRemotePairingScript(await stateKey(target), remoteRunner()),
       [],
-      signal,
+      signal ? { signal } : {},
     );
     throwIfSshAborted(signal);
     const parsed = await Effect.runPromise(decodeRemotePairingOutput(result.stdout));
@@ -264,6 +334,7 @@ export async function disconnectMobileSshEnvironment(
   const key = targetKey(target);
   const inFlight = pending.get(key);
   if (inFlight) await inFlight.catch(() => undefined);
+  lastRemote.delete(key);
   const entry = entries.get(key);
   if (!entry) return;
   entries.delete(key);

@@ -15,12 +15,19 @@ export interface MobileSshCredentials {
   readonly passphrase?: string;
 }
 
+export interface MobileSshScriptOptions {
+  readonly signal?: AbortSignal;
+  // Sources the user's profile first. Only the launch script needs it, to find
+  // node, curl, or wget on PATH; it can cost seconds on heavy dotfiles.
+  readonly loginShell?: boolean;
+}
+
 export interface MobileSshSession {
   readonly connection: SshConnection;
   readonly runScript: (
     script: string,
     args?: readonly string[],
-    signal?: AbortSignal,
+    options?: MobileSshScriptOptions,
   ) => Promise<{ readonly stdout: string; readonly stderr: string }>;
   readonly forwardLoopback: (remotePort: number) => Promise<SshLocalForward>;
   readonly close: () => Promise<void>;
@@ -58,7 +65,7 @@ export async function openMobileSshSession(
   const forwards = new Set<SshLocalForward>();
   return {
     connection,
-    runScript: async (script, args = [], runSignal) => {
+    runScript: async (script, args = [], { signal: runSignal, loginShell = false } = {}) => {
       if (runSignal?.aborted) {
         throw new Error("SSH command was cancelled.");
       }
@@ -71,7 +78,13 @@ export async function openMobileSshSession(
       const closed = new Promise<number | undefined>((resolve) => {
         resolveClosed = resolve;
       });
-      const command = ["sh", "-l", "-s", "--", ...args.map(shellQuote)].join(" ");
+      const command = [
+        "sh",
+        ...(loginShell ? ["-l"] : []),
+        "-s",
+        "--",
+        ...args.map(shellQuote),
+      ].join(" ");
       const shell = await connection.openShell(
         { term: "", command },
         {

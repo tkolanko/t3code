@@ -1,4 +1,7 @@
-import { bootstrapRemoteBearerSession } from "@t3tools/client-runtime/authorization";
+import {
+  bootstrapRemoteBearerSession,
+  fetchRemoteSessionState,
+} from "@t3tools/client-runtime/authorization";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -175,6 +178,15 @@ async function remoteAuthorization(
   return { descriptor, access };
 }
 
+async function bearerAccepted(httpBaseUrl: string, bearerToken: string): Promise<boolean> {
+  const state = await Effect.runPromise(
+    fetchRemoteSessionState({ httpBaseUrl, bearerToken }).pipe(
+      Effect.provide(remoteHttpClientLayer((input, init) => globalThis.fetch(input, init))),
+    ),
+  ).catch(() => null);
+  return state?.authenticated === true;
+}
+
 export const mobileSshGateway = SshEnvironmentGateway.of({
   provision: (target) =>
     Effect.tryPromise({
@@ -199,6 +211,7 @@ export const mobileSshGateway = SshEnvironmentGateway.of({
         throwIfSshAborted(pending.signal);
         await mobileSshSecrets.saveCredentials(connectionId, pending.credentials);
         pending.savedConnectionId = connectionId;
+        await mobileSshSecrets.saveBearerToken(connectionId, access.access_token);
         return {
           environmentId: descriptor.environmentId,
           label: descriptor.label,
@@ -213,10 +226,16 @@ export const mobileSshGateway = SshEnvironmentGateway.of({
       try: async () => {
         const credentials = await mobileSshSecrets.loadCredentials(input.connectionId);
         if (!credentials) throw new Error("Saved SSH key is missing.");
+        const tunnel = await ensureMobileSshEnvironment(input.target, credentials, false);
+        const cached = await mobileSshSecrets.loadBearerToken(input.connectionId);
+        if (cached !== null && (await bearerAccepted(tunnel.httpBaseUrl, cached))) {
+          return { bootstrap: tunnel, bearerToken: cached };
+        }
         const bootstrap = await ensureMobileSshEnvironment(input.target, credentials, true);
         if (!bootstrap.pairingToken)
           throw new Error("The SSH host did not issue a pairing credential.");
         const { access } = await remoteAuthorization(bootstrap.httpBaseUrl, bootstrap.pairingToken);
+        await mobileSshSecrets.saveBearerToken(input.connectionId, access.access_token);
         return { bootstrap, bearerToken: access.access_token };
       },
       catch: connectionError,

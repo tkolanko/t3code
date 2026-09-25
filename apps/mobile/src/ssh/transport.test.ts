@@ -38,9 +38,9 @@ describe("mobile SSH transport", () => {
       async () => true,
     );
 
-    await expect(session.runScript("echo ready", [], controller.signal)).rejects.toThrow(
-      "SSH command was cancelled.",
-    );
+    await expect(
+      session.runScript("echo ready", [], { signal: controller.signal }),
+    ).rejects.toThrow("SSH command was cancelled.");
     expect(harness.shellCloses).toBeGreaterThan(0);
     await session.close();
     expect(harness.disconnects).toBe(1);
