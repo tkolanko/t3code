@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a Release app signed with an Xcode Personal Team and install it on a
-# connected iPhone, optionally merging upstream first. Free signing expires after
-# 7 days, so rerun this before then. See apps/mobile/README.md.
+# connected iPhone, optionally merging upstream first. Requests a fresh signing
+# profile each time; free signing expires 7 days from issuance. See apps/mobile/README.md.
 #
 #   scripts/ios-personal-device.sh              merge upstream/main, build, install
 #   scripts/ios-personal-device.sh --no-update  build and install the current checkout
@@ -84,6 +84,40 @@ export APP_VARIANT=production T3CODE_IOS_PERSONAL_TEAM=1 EXPO_NO_GIT_STATUS=1
 step "Generating the iOS project"
 npx expo prebuild --clean --platform ios
 
+# Use the same environment resolution as app.config.ts, including the repo .env.
+BUNDLE_ID="$(node --input-type=module -e '
+  import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+  process.stdout.write(loadRepoEnv().T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID.trim());
+')"
+
+step "Requesting a fresh provisioning profile for $BUNDLE_ID"
+# Automatic signing requests a new profile when no eligible cached profile exists.
+# Match the team and exact app ID so other apps' signing profiles stay intact.
+python3 - "$TEAM_ID" "$BUNDLE_ID" <<'EOF'
+import pathlib, plistlib, subprocess, sys
+
+team, bundle = sys.argv[1:]
+for directory in (
+    pathlib.Path.home() / "Library/MobileDevice/Provisioning Profiles",
+    pathlib.Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles",
+):
+    for path in directory.glob("*.mobileprovision"):
+        result = subprocess.run(
+            ["openssl", "cms", "-verify", "-inform", "DER", "-in", str(path), "-noverify"],
+            capture_output=True,
+        )
+        if result.returncode:
+            sys.exit(f"Could not decode cached provisioning profile: {path}")
+        profile = plistlib.loads(result.stdout)
+        app_id = profile.get("Entitlements", {}).get("application-identifier")
+        prefixes = profile.get("ApplicationIdentifierPrefix", [])
+        if team in profile.get("TeamIdentifier", []) and any(
+            app_id == f"{prefix}.{bundle}" for prefix in prefixes
+        ):
+            path.unlink()
+            print(f"Removed cached profile {path.name}")
+EOF
+
 step "Building Release (this takes a while)"
 if ! xcodebuild \
   -workspace ios/T3Code.xcworkspace \
@@ -101,8 +135,27 @@ if ! xcodebuild \
 fi
 
 APP="$(ls -d ios/build/Build/Products/Release-iphoneos/*.app | head -1)"
+step "Checking signing expiration"
+python3 - "$APP/embedded.mobileprovision" <<'EOF'
+import datetime, plistlib, subprocess, sys
+
+result = subprocess.run(
+    ["openssl", "cms", "-verify", "-inform", "DER", "-in", sys.argv[1], "-noverify"],
+    capture_output=True, check=True,
+)
+profile = plistlib.loads(result.stdout)
+expiration = profile["ExpirationDate"].replace(tzinfo=datetime.timezone.utc)
+remaining = expiration - datetime.datetime.now(datetime.timezone.utc)
+print(f"Signing expires: {expiration.astimezone():%Y-%m-%d %H:%M:%S %Z}")
+if remaining.total_seconds() <= 0:
+    sys.exit("Xcode used an expired provisioning profile. The app was not installed.")
+print(f"Time remaining: {remaining.days} days, {remaining.seconds // 3600} hours")
+if remaining < datetime.timedelta(days=6):
+    print("Warning: Xcode did not provide a full new week of signing validity.", file=sys.stderr)
+EOF
+
 step "Installing $(basename "$APP") on the iPhone"
 wait_for_phone
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP"
 
-step "Done. Personal Team signing expires in 7 days."
+step "Done. Reinstall before the signing expiration shown above."

@@ -99,8 +99,10 @@ scripts/ios-personal-device.sh              # merge upstream/main, then build an
 scripts/ios-personal-device.sh --no-update  # build and install the current checkout
 ```
 
-It signs with your Xcode account's team, so you do not need to pick one in Xcode. Personal Team
-signing expires after 7 days; rerun the script before then.
+It signs with your Xcode account's team, so you do not need to pick one in Xcode. Each run removes
+cached provisioning profiles for this bundle identifier and team so Xcode requests a fresh profile.
+Personal Team signing expires 7 days from profile issuance, not installation. The script prints
+the signed app's actual expiration date; rerun it before then.
 
 Build and run the local iOS preview app:
 
