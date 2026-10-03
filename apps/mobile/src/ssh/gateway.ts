@@ -7,7 +7,7 @@ import {
   ConnectionTransientError,
 } from "@t3tools/client-runtime/connection";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
-import { SshEnvironmentGateway } from "@t3tools/client-runtime/platform";
+import { ClientCapabilities } from "@t3tools/client-runtime/platform";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { AuthStandardClientScopes, type DesktopSshEnvironmentTarget } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -187,7 +187,7 @@ async function bearerAccepted(httpBaseUrl: string, bearerToken: string): Promise
   return state?.authenticated === true;
 }
 
-export const mobileSshGateway = SshEnvironmentGateway.of({
+export const mobileSshGateway = ClientCapabilities.SshEnvironmentGateway.of({
   provision: (target) =>
     Effect.tryPromise({
       try: async () => {
