@@ -3,6 +3,7 @@ import {
   registerConnectionInCatalog,
   removeConnectionFromCatalog,
   setConnectionEnabledInCatalog,
+  setRoutesInCatalog,
   removeCatalogValue,
   replaceCatalogValue,
   Persistence,
@@ -42,6 +43,7 @@ function targetPersistenceError(
     | "list-targets"
     | "list-disabled-targets"
     | "register-connection"
+    | "set-connection-routes"
     | "remove-connection"
     | "set-connection-enabled",
   error: ConnectionTransientError,
@@ -52,7 +54,7 @@ function targetPersistenceError(
   });
 }
 
-export const connectionStorageLayer = Layer.effectContext(
+export const layer = Layer.effectContext(
   Effect.gen(function* () {
     const catalog = yield* CatalogStore.make();
     const githubRoutingPermissions = yield* makeGitHubRoutingPermissions({
@@ -72,10 +74,12 @@ export const connectionStorageLayer = Layer.effectContext(
       ),
     });
     const registrationStore = Persistence.ConnectionRegistrationStore.of({
-      register: (registration) =>
+      register: (registration, routes) =>
         Effect.gen(function* () {
           const previous = yield* catalog.read;
-          yield* catalog.update((document) => registerConnectionInCatalog(document, registration));
+          yield* catalog.update((document) =>
+            registerConnectionInCatalog(document, registration, routes),
+          );
           if (registration._tag === "SshConnectionRegistration") {
             yield* Effect.sync(() =>
               markStagedMobileSshCommitted(
@@ -96,16 +100,26 @@ export const connectionStorageLayer = Layer.effectContext(
             catch: () => new Error("SSH cleanup failed"),
           }).pipe(Effect.catch(() => Effect.sync(reportSshCleanupError)));
         }).pipe(Effect.mapError((error) => targetPersistenceError("register-connection", error))),
-      remove: (target) =>
+      remove: (environmentId) =>
         Effect.gen(function* () {
           const previous = yield* catalog.read;
-          yield* catalog.update((document) => removeConnectionFromCatalog(document, target));
+          yield* catalog.update((document) => removeConnectionFromCatalog(document, environmentId));
           const next = yield* catalog.read;
           yield* Effect.tryPromise({
-            try: () => cleanupPreviousSsh(previous, next, target.environmentId, sshCleanupActions),
+            try: () => cleanupPreviousSsh(previous, next, environmentId, sshCleanupActions),
             catch: () => new Error("SSH cleanup failed"),
           }).pipe(Effect.catch(() => Effect.sync(reportSshCleanupError)));
         }).pipe(Effect.mapError((error) => targetPersistenceError("remove-connection", error))),
+      setRoutes: (environmentId, routes) =>
+        Effect.gen(function* () {
+          const previous = yield* catalog.read;
+          yield* catalog.update((document) => setRoutesInCatalog(document, environmentId, routes));
+          const next = yield* catalog.read;
+          yield* Effect.tryPromise({
+            try: () => cleanupPreviousSsh(previous, next, environmentId, sshCleanupActions),
+            catch: () => new Error("SSH cleanup failed"),
+          }).pipe(Effect.catch(() => Effect.sync(reportSshCleanupError)));
+        }).pipe(Effect.mapError((error) => targetPersistenceError("set-connection-routes", error))),
       setEnabled: (environmentId, enabled) =>
         catalog
           .update((document) => setConnectionEnabledInCatalog(document, environmentId, enabled))

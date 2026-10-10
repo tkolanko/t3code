@@ -8,7 +8,7 @@ import {
 } from "@t3tools/client-runtime/connection";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { ClientCapabilities } from "@t3tools/client-runtime/platform";
-import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
+import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { AuthStandardClientScopes, type DesktopSshEnvironmentTarget } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import Constants from "expo-constants";
@@ -160,7 +160,7 @@ async function remoteAuthorization(
   signal?: AbortSignal,
 ) {
   throwIfSshAborted(signal);
-  const http = remoteHttpClientLayer((input, init) =>
+  const http = layerRemoteHttpClient((input, init) =>
     globalThis.fetch(input, signal ? { ...init, signal } : init),
   );
   const descriptor = await Effect.runPromise(
@@ -181,7 +181,7 @@ async function remoteAuthorization(
 async function bearerAccepted(httpBaseUrl: string, bearerToken: string): Promise<boolean> {
   const state = await Effect.runPromise(
     fetchRemoteSessionState({ httpBaseUrl, bearerToken }).pipe(
-      Effect.provide(remoteHttpClientLayer((input, init) => globalThis.fetch(input, init))),
+      Effect.provide(layerRemoteHttpClient((input, init) => globalThis.fetch(input, init))),
     ),
   ).catch(() => null);
   return state?.authenticated === true;

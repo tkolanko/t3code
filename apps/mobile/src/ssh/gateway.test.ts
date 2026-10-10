@@ -22,7 +22,7 @@ vi.mock("@t3tools/client-runtime/authorization", () => ({
   bootstrapRemoteBearerSession: () => Effect.succeed({ access_token: "bearer-token" }),
   fetchRemoteSessionState: () => Effect.succeed({ authenticated: harness.acceptsBearer }),
 }));
-vi.mock("@t3tools/client-runtime/rpc", () => ({ remoteHttpClientLayer: () => Layer.empty }));
+vi.mock("@t3tools/client-runtime/rpc", () => ({ layerRemoteHttpClient: () => Layer.empty }));
 vi.mock("./manager", () => ({
   SshHostKeyChangedError: class extends Error {},
   ensureMobileSshEnvironment: async (

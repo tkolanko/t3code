@@ -1,4 +1,4 @@
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, View } from "react-native";
@@ -7,7 +7,7 @@ import { ErrorBanner } from "../../components/ErrorBanner";
 import { setMobileSshHostTrustDecision } from "../../ssh/manager";
 import { useConnectionController } from "./useConnectionController";
 import { ConnectionFormField } from "./ConnectionFormField";
-import { ConnectionSheetButton } from "./ConnectionSheetButton";
+import { MaterialButton } from "../../components/MaterialButton";
 
 export function MobileSshConnectionForm({ onConnected }: { readonly onConnected: () => void }) {
   const { connectSshEnvironment } = useConnectionController();
@@ -130,8 +130,7 @@ export function MobileSshConnectionForm({ onConnected }: { readonly onConnected:
       {error ? <ErrorBanner message={error} /> : null}
       <View className="flex-row justify-end gap-2">
         {submitting ? (
-          <ConnectionSheetButton
-            icon="xmark"
+          <MaterialButton
             label="Cancel"
             disabled={cancelled}
             onPress={() => {
@@ -140,8 +139,7 @@ export function MobileSshConnectionForm({ onConnected }: { readonly onConnected:
             }}
           />
         ) : null}
-        <ConnectionSheetButton
-          icon="plus"
+        <MaterialButton
           label={submitting ? "Connecting..." : "Add SSH environment"}
           disabled={submitting}
           tone="primary"

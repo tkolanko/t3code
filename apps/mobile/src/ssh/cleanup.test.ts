@@ -51,10 +51,27 @@ describe("mobile SSH cleanup", () => {
   it("removes the key and host trust after the final saved connection is removed", async () => {
     const registration = sshRegistration("first");
     const before = registerConnectionInCatalog(EMPTY_CONNECTION_CATALOG_DOCUMENT, registration);
-    const after = removeConnectionFromCatalog(before, registration.target);
+    const after = removeConnectionFromCatalog(before, registration.target.environmentId);
     const cleanup = actions();
 
     await cleanupPreviousSsh(before, after, registration.target.environmentId, cleanup);
+    expect(cleanup.calls).toEqual(["disconnect", "credentials:ssh:first", "trust:example.test:22"]);
+  });
+
+  it("cleans up an SSH route saved after a direct route", async () => {
+    const ssh = sshRegistration("first");
+    const direct = new BearerConnectionTarget({
+      environmentId: ssh.target.environmentId,
+      label: "direct",
+      connectionId: "bearer:first",
+    });
+    const before = registerConnectionInCatalog(EMPTY_CONNECTION_CATALOG_DOCUMENT, ssh, [
+      direct,
+      ssh.target,
+    ]);
+    const after = removeConnectionFromCatalog(before, ssh.target.environmentId);
+    const cleanup = actions();
+    await cleanupPreviousSsh(before, after, ssh.target.environmentId, cleanup);
     expect(cleanup.calls).toEqual(["disconnect", "credentials:ssh:first", "trust:example.test:22"]);
   });
 
@@ -65,7 +82,7 @@ describe("mobile SSH cleanup", () => {
       registerConnectionInCatalog(EMPTY_CONNECTION_CATALOG_DOCUMENT, first),
       second,
     );
-    const after = removeConnectionFromCatalog(before, first.target);
+    const after = removeConnectionFromCatalog(before, first.target.environmentId);
     const cleanup = actions();
 
     await cleanupPreviousSsh(before, after, first.target.environmentId, cleanup);

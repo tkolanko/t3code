@@ -15,45 +15,50 @@ export async function cleanupPreviousSsh(
   environmentId: string,
   actions: SshCleanupActions,
 ): Promise<void> {
-  const oldTarget = previous.targets.find((candidate) => candidate.environmentId === environmentId);
-  if (oldTarget?._tag !== "SshConnectionTarget") return;
-  const oldProfile = previous.profiles.find(
-    (candidate) => candidate.connectionId === oldTarget.connectionId,
-  );
-  if (oldProfile?._tag !== "SshConnectionProfile") return;
-
-  const replacement = next.profiles.find(
+  const oldTargets = previous.targets.filter(
     (candidate) =>
-      candidate._tag === "SshConnectionProfile" &&
-      candidate.connectionId === oldTarget.connectionId,
+      candidate.environmentId === environmentId && candidate._tag === "SshConnectionTarget",
   );
-  const sameTarget =
-    replacement?._tag === "SshConnectionProfile" &&
-    replacement.target.alias === oldProfile.target.alias &&
-    replacement.target.hostname === oldProfile.target.hostname &&
-    replacement.target.username === oldProfile.target.username &&
-    replacement.target.port === oldProfile.target.port;
-  const cleanup: Array<Promise<void>> = sameTarget ? [] : [actions.disconnect(oldProfile.target)];
-  const stillSaved = next.profiles.some(
-    (candidate) =>
-      candidate._tag === "SshConnectionProfile" &&
-      candidate.connectionId === oldTarget.connectionId,
-  );
-  if (!stillSaved) cleanup.push(actions.removeCredentials(oldTarget.connectionId));
-
-  const oldHost = sshHostIdentity(oldProfile.target.hostname, oldProfile.target.port ?? 22);
-  const hostStillUsed = next.profiles.some(
-    (candidate) =>
-      candidate._tag === "SshConnectionProfile" &&
-      sshHostIdentity(candidate.target.hostname, candidate.target.port ?? 22) === oldHost,
-  );
-  if (!hostStillUsed) {
-    cleanup.push(
-      actions.removeTrustedKey(oldProfile.target.hostname, oldProfile.target.port ?? 22),
+  for (const oldTarget of oldTargets) {
+    if (oldTarget._tag !== "SshConnectionTarget") continue;
+    const oldProfile = previous.profiles.find(
+      (candidate) => candidate.connectionId === oldTarget.connectionId,
     );
-  }
-  const results = await Promise.allSettled(cleanup);
-  if (results.some((result) => result.status === "rejected")) {
-    throw new Error("SSH cleanup failed");
+    if (oldProfile?._tag !== "SshConnectionProfile") continue;
+
+    const replacement = next.profiles.find(
+      (candidate) =>
+        candidate._tag === "SshConnectionProfile" &&
+        candidate.connectionId === oldTarget.connectionId,
+    );
+    const sameTarget =
+      replacement?._tag === "SshConnectionProfile" &&
+      replacement.target.alias === oldProfile.target.alias &&
+      replacement.target.hostname === oldProfile.target.hostname &&
+      replacement.target.username === oldProfile.target.username &&
+      replacement.target.port === oldProfile.target.port;
+    const cleanup: Array<Promise<void>> = sameTarget ? [] : [actions.disconnect(oldProfile.target)];
+    const stillSaved = next.profiles.some(
+      (candidate) =>
+        candidate._tag === "SshConnectionProfile" &&
+        candidate.connectionId === oldTarget.connectionId,
+    );
+    if (!stillSaved) cleanup.push(actions.removeCredentials(oldTarget.connectionId));
+
+    const oldHost = sshHostIdentity(oldProfile.target.hostname, oldProfile.target.port ?? 22);
+    const hostStillUsed = next.profiles.some(
+      (candidate) =>
+        candidate._tag === "SshConnectionProfile" &&
+        sshHostIdentity(candidate.target.hostname, candidate.target.port ?? 22) === oldHost,
+    );
+    if (!hostStillUsed) {
+      cleanup.push(
+        actions.removeTrustedKey(oldProfile.target.hostname, oldProfile.target.port ?? 22),
+      );
+    }
+    const results = await Promise.allSettled(cleanup);
+    if (results.some((result) => result.status === "rejected")) {
+      throw new Error("SSH cleanup failed");
+    }
   }
 }
