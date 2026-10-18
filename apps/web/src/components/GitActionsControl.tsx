@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
+  SourceControlProviderKind,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
@@ -14,22 +15,13 @@ import type {
   GitStackedAction,
   SourceControlCloneProtocol,
   SourceControlProviderDiscoveryItem,
-  SourceControlProviderKind,
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryVisibility,
   VcsStatusResult,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import {
-  type MouseEvent,
-  useCallback,
-  useEffect,
-  useEffectEvent,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type MouseEvent, useEffect, useEffectEvent, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   CheckIcon,
@@ -44,14 +36,6 @@ import {
   GlobeIcon,
 } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
-import {
-  AzureDevOpsIcon,
-  BitbucketIcon,
-  GitHubIcon,
-  GitLabIcon,
-  ForgejoIcon,
-  GitCafeIcon,
-} from "~/components/Icons";
 import { RadioGroup } from "~/components/ui/radio-group";
 import { Spinner } from "~/components/ui/spinner";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
@@ -113,7 +97,7 @@ import {
   useVcsInitAction,
   useVcsPullAction,
 } from "~/lib/sourceControlActions";
-import { useThreadProjection, useThreadShell } from "~/state/entities";
+import { useThreadProjection, useQuietThreadShell } from "~/state/entities";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
@@ -131,7 +115,9 @@ import {
   THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./chat/threadDetailsPanelStyles";
-import { getSourceControlPresentation } from "~/sourceControlPresentation";
+import { getSourceControlPresentation, sourceControlIcon } from "~/sourceControlPresentation";
+import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
+import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { useOpenLink } from "~/browser/useOpenLink";
 
 interface GitActionsControlProps {
@@ -139,10 +125,6 @@ interface GitActionsControlProps {
   gitCwd: string | null;
   activeThreadRef: ScopedThreadRef | null;
   draftId?: DraftId;
-  /**
-   * Opens the thread's own change request beside it. Absent when the thread has no project to
-   * place it against, in which case it still opens in the browser.
-   */
   onOpenPullRequest?: ((number: number) => void) | undefined;
   displayMode?: "toolbar" | "panel";
   compact?: boolean;
@@ -157,11 +139,6 @@ interface PendingDefaultBranchAction {
   onConfirmed?: () => void;
   filePaths?: string[];
 }
-
-type PublishProviderKind = Extract<
-  SourceControlProviderKind,
-  "github" | "gitlab" | "forgejo" | "bitbucket" | "azure-devops" | "gitcafe"
->;
 
 type GitActionToastId = ReturnType<typeof toastManager.add>;
 
@@ -200,79 +177,24 @@ function requestVcsStatusRefresh(
 }
 const RUNNING_SOURCE_CONTROL_ACTIONS = ["runStackedAction", "pull", "publishRepository"] as const;
 
-const PUBLISH_PROVIDER_OPTIONS = [
-  {
-    value: "forgejo",
-    label: "Forgejo / Gitea",
-    description: "Your signed-in server",
-    host: "your server",
-    pathPlaceholder: "owner/repo",
-    Icon: ForgejoIcon,
-  },
-  {
-    value: "github",
-    label: "GitHub",
-    description: "github.com",
-    host: "github.com",
-    pathPlaceholder: "owner/repo",
-    Icon: GitHubIcon,
-  },
-  {
-    value: "gitlab",
-    label: "GitLab",
-    description: "gitlab.com",
-    host: "gitlab.com",
-    pathPlaceholder: "group/project",
-    Icon: GitLabIcon,
-  },
-  {
-    value: "bitbucket",
-    label: "Bitbucket",
-    description: "bitbucket.org",
-    host: "bitbucket.org",
-    pathPlaceholder: "workspace/repository",
-    Icon: BitbucketIcon,
-  },
-  {
-    value: "azure-devops",
-    label: "Azure DevOps",
-    description: "dev.azure.com",
-    host: "dev.azure.com",
-    pathPlaceholder: "project/repository",
-    Icon: AzureDevOpsIcon,
-  },
-  {
-    value: "gitcafe",
-    label: "GitCafe",
-    description: "git.cafe",
-    host: "git.cafe",
-    pathPlaceholder: "owner/repo",
-    Icon: GitCafeIcon,
-  },
-] as const satisfies ReadonlyArray<{
-  readonly value: PublishProviderKind;
-  readonly label: string;
-  readonly description: string;
-  readonly host: string;
-  readonly pathPlaceholder: string;
-  readonly Icon: typeof GitHubIcon;
-}>;
+const PUBLISH_PROVIDER_OPTIONS = sourceControlClients.definitions.map((definition) => ({
+  value: definition.kind,
+  label: definition.pickerLabel,
+  description: definition.publishDescription,
+  pathPlaceholder: definition.repositoryPathHint,
+  definition,
+  Icon: sourceControlIcon(definition),
+}));
 
-function publishProviderOption(provider: PublishProviderKind) {
+function publishProviderOption(provider: SourceControlProviderKind) {
   return (
     PUBLISH_PROVIDER_OPTIONS.find((option) => option.value === provider) ??
-    PUBLISH_PROVIDER_OPTIONS[0]
+    PUBLISH_PROVIDER_OPTIONS[0]!
   );
 }
 
-function isPublishProviderKind(
-  provider: SourceControlProviderKind,
-): provider is PublishProviderKind {
-  return PUBLISH_PROVIDER_OPTIONS.some((option) => option.value === provider);
-}
-
 function getPublishProviderReadiness(input: {
-  provider: PublishProviderKind;
+  provider: SourceControlProviderKind;
   sourceControlProviders: ReadonlyArray<SourceControlProviderDiscoveryItem>;
 }): { readonly ready: boolean; readonly hint: string | null } {
   const discovered = input.sourceControlProviders.find(
@@ -442,10 +364,6 @@ function GitActionProgressButtonContent({
       aria-live="polite"
       className={cn(
         "grid min-w-0 flex-1 items-center",
-        // Pin the title row to the button's minimum content height so output
-        // expands below it. Panel controls leave 24px after padding and border.
-        // No row gap: collapsed output must not add height. The panel's elapsed
-        // counter uses the menu-chevron slot, so it has no trailing column.
         isPanel
           ? "grid-cols-[auto_minmax(0,1fr)] grid-rows-[1.5rem] gap-x-3"
           : "grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[1.25rem] gap-x-2.5 sm:grid-rows-[1rem]",
@@ -535,7 +453,6 @@ interface PublishRepositoryDialogProps {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly environmentId: ScopedThreadRef["environmentId"] | null;
-  /** Thread the dialog was opened from, so the new repository can open beside it. */
   readonly threadRef: ScopedThreadRef | null;
   readonly gitCwd: string;
 }
@@ -552,7 +469,7 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
         }),
   );
   const [selectedPublishProvider, setSelectedPublishProvider] =
-    useState<PublishProviderKind | null>(null);
+    useState<SourceControlProviderKind | null>(null);
   const [publishRepositoryOverride, setPublishRepositoryOverride] = useState<string | null>(null);
   const [publishVisibility, setPublishVisibility] =
     useState<SourceControlRepositoryVisibility>("private");
@@ -564,79 +481,59 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   const [publishResult, setPublishResult] = useState<SourceControlPublishRepositoryResult | null>(
     null,
   );
-  const sourceControlScope = useMemo(
-    () => ({
-      environmentId: props.environmentId,
-      cwd: props.gitCwd,
-    }),
-    [props.environmentId, props.gitCwd],
-  );
+  const sourceControlScope = {
+    environmentId: props.environmentId,
+    cwd: props.gitCwd,
+  };
   const publishRepositoryAction = useSourceControlPublishRepositoryAction(sourceControlScope);
-  const publishAccountByProvider = useMemo(() => {
-    const accounts: Record<PublishProviderKind, string | null> = {
-      github: null,
-      gitlab: null,
-      forgejo: null,
-      bitbucket: null,
-      "azure-devops": null,
-      gitcafe: null,
-    };
-    for (const provider of sourceControlDiscovery.data?.sourceControlProviders ?? []) {
-      if (isPublishProviderKind(provider.kind)) {
-        accounts[provider.kind] = Option.getOrNull(provider.auth.account);
-      }
-    }
-    return accounts;
-  }, [sourceControlDiscovery.data]);
-  const publishProviderReadiness = useMemo(() => {
-    const sourceControlProviders = sourceControlDiscovery.data?.sourceControlProviders ?? [];
-    return Object.fromEntries(
-      PUBLISH_PROVIDER_OPTIONS.map((option) => [
-        option.value,
-        getPublishProviderReadiness({
-          provider: option.value,
-          sourceControlProviders,
-        }),
-      ]),
-    ) as Record<PublishProviderKind, { readonly ready: boolean; readonly hint: string | null }>;
-  }, [sourceControlDiscovery.data]);
-  const hasReadyPublishProvider = useMemo(
-    () => PUBLISH_PROVIDER_OPTIONS.some((option) => publishProviderReadiness[option.value].ready),
-    [publishProviderReadiness],
-  );
-  const sortedPublishProviderOptions = useMemo(
-    () =>
-      PUBLISH_PROVIDER_OPTIONS.toSorted((left, right) => {
-        const leftReady = publishProviderReadiness[left.value].ready;
-        const rightReady = publishProviderReadiness[right.value].ready;
-        if (leftReady !== rightReady) {
-          return leftReady ? -1 : 1;
-        }
-        return left.label.localeCompare(right.label);
+  const publishAccountByProvider = new Map<string, string | null>();
+  for (const provider of sourceControlDiscovery.data?.sourceControlProviders ?? []) {
+    publishAccountByProvider.set(provider.kind, Option.getOrNull(provider.auth.account));
+  }
+  const publishSourceControlProviders = sourceControlDiscovery.data?.sourceControlProviders ?? [];
+  const publishReadinessByProvider = new Map(
+    PUBLISH_PROVIDER_OPTIONS.map((option) => [
+      option.value,
+      getPublishProviderReadiness({
+        provider: option.value,
+        sourceControlProviders: publishSourceControlProviders,
       }),
-    [publishProviderReadiness],
+    ]),
   );
+  const publishProviderReadiness = (provider: SourceControlProviderKind) =>
+    publishReadinessByProvider.get(provider) ?? { ready: false, hint: null };
+  const hasReadyPublishProvider = PUBLISH_PROVIDER_OPTIONS.some(
+    (option) => publishProviderReadiness(option.value).ready,
+  );
+  const sortedPublishProviderOptions = PUBLISH_PROVIDER_OPTIONS.toSorted((left, right) => {
+    const leftReady = publishProviderReadiness(left.value).ready;
+    const rightReady = publishProviderReadiness(right.value).ready;
+    if (leftReady !== rightReady) {
+      return leftReady ? -1 : 1;
+    }
+    return left.label.localeCompare(right.label);
+  });
   const firstReadyPublishProvider = sortedPublishProviderOptions.find(
-    (option) => publishProviderReadiness[option.value].ready,
+    (option) => publishProviderReadiness(option.value).ready,
   )?.value;
   const publishProvider =
-    selectedPublishProvider !== null && publishProviderReadiness[selectedPublishProvider].ready
+    selectedPublishProvider !== null && publishProviderReadiness(selectedPublishProvider).ready
       ? selectedPublishProvider
-      : (firstReadyPublishProvider ?? selectedPublishProvider ?? "github");
-  const selectedPublishProviderReadiness = publishProviderReadiness[publishProvider];
-  const publishRepositoryPrefill = publishAccountByProvider[publishProvider]
-    ? `${publishAccountByProvider[publishProvider]}/`
-    : "";
+      : (firstReadyPublishProvider ??
+        selectedPublishProvider ??
+        sourceControlClients.get(undefined).kind);
+  const selectedPublishProviderReadiness = publishProviderReadiness(publishProvider);
+  const publishAccount = publishAccountByProvider.get(publishProvider) ?? null;
+  const publishRepositoryPrefill = publishAccount ? `${publishAccount}/` : "";
   const publishRepository = publishRepositoryOverride ?? publishRepositoryPrefill;
   const currentPublishProvider = publishProviderOption(publishProvider);
-  const publishHost =
-    publishProvider === "forgejo"
-      ? (Option.getOrNull(
-          sourceControlDiscovery.data?.sourceControlProviders.find(
-            (provider) => provider.kind === "forgejo",
-          )?.auth.host ?? Option.none(),
-        ) ?? currentPublishProvider.host)
-      : currentPublishProvider.host;
+  const publishHost = currentPublishProvider.definition.publishHost(
+    Option.getOrNull(
+      sourceControlDiscovery.data?.sourceControlProviders.find(
+        (provider) => provider.kind === publishProvider,
+      )?.auth.host ?? Option.none(),
+    ),
+  );
   const publishPathPlaceholder = currentPublishProvider.pathPlaceholder;
   const publishProviderLabel = currentPublishProvider.label;
   const publishWizardSteps = ["Provider", "Repository", "Summary"] as const;
@@ -646,22 +543,17 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
     null,
   ] as const;
 
-  const canSubmitPublishRepository = useMemo(() => {
-    if (!publishRepositoryAction.isAllowed || !selectedPublishProviderReadiness.ready) return false;
-    if (publishRepositoryAction.isPending) return false;
-    const repositoryParts = publishRepository.trim().split("/");
-    const owner = repositoryParts[0]?.trim() ?? "";
-    const rest = repositoryParts.slice(1);
-    const name = rest.join("/").trim();
-    return owner.length > 0 && name.length > 0;
-  }, [
-    publishRepository,
-    publishRepositoryAction.isAllowed,
-    publishRepositoryAction.isPending,
-    selectedPublishProviderReadiness,
-  ]);
+  const publishRepositoryParts = publishRepository.trim().split("/");
+  const publishRepositoryOwner = publishRepositoryParts[0]?.trim() ?? "";
+  const publishRepositoryName = publishRepositoryParts.slice(1).join("/").trim();
+  const canSubmitPublishRepository =
+    publishRepositoryAction.isAllowed &&
+    selectedPublishProviderReadiness.ready &&
+    !publishRepositoryAction.isPending &&
+    publishRepositoryOwner.length > 0 &&
+    publishRepositoryName.length > 0;
 
-  const submitPublishRepository = useCallback(() => {
+  const submitPublishRepository = () => {
     if (!canSubmitPublishRepository) {
       return;
     }
@@ -690,41 +582,28 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
         setPublishWizardStep(2);
       });
     })();
-  }, [
-    canSubmitPublishRepository,
-    props.environmentId,
-    props.gitCwd,
-    publishProtocol,
-    publishProvider,
-    publishRemoteName,
-    publishRepository,
-    publishRepositoryAction,
-    publishVisibility,
-  ]);
+  };
 
-  const resetState = useCallback(() => {
+  const resetState = () => {
     setPublishRemoteName("origin");
     setPublishRepositoryOverride(null);
     setPublishWizardStep(0);
     setPublishAdvancedOpen(false);
     setPublishError(null);
     setPublishResult(null);
-  }, []);
+  };
 
-  const handleOpenChange = useCallback(
-    (open: boolean) => {
-      props.onOpenChange(open);
-      if (!open) {
-        resetState();
-      }
-    },
-    [props, resetState],
-  );
+  const handleOpenChange = (open: boolean) => {
+    props.onOpenChange(open);
+    if (!open) {
+      resetState();
+    }
+  };
 
-  const openSourceControlSettings = useCallback(() => {
+  const openSourceControlSettings = () => {
     handleOpenChange(false);
     void navigate({ to: "/settings/source-control" });
-  }, [handleOpenChange, navigate]);
+  };
 
   return (
     <Dialog open={props.open} onOpenChange={handleOpenChange}>
@@ -755,14 +634,14 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
             <RadioGroup
               value={publishProvider}
               onValueChange={(value) => {
-                setSelectedPublishProvider(value as PublishProviderKind);
+                setSelectedPublishProvider(value as SourceControlProviderKind);
                 setPublishRepositoryOverride(null);
               }}
               aria-labelledby="publish-provider-cards-label"
               className="grid grid-cols-2"
             >
               {sortedPublishProviderOptions.map((option) => {
-                const readiness = publishProviderReadiness[option.value];
+                const readiness = publishProviderReadiness(option.value);
                 const isSelected = publishProvider === option.value && readiness.ready;
                 if (!readiness.ready) {
                   return (
@@ -1102,11 +981,8 @@ export default function GitActionsControl({
     activeEnvironmentId,
     serverConfig?.availableEditors ?? [],
   );
-  const threadToastData = useMemo(
-    () => (activeThreadRef ? { threadRef: activeThreadRef } : undefined),
-    [activeThreadRef],
-  );
-  const activeServerThreadShell = useThreadShell(activeThreadRef);
+  const threadToastData = activeThreadRef ? { threadRef: activeThreadRef } : undefined;
+  const activeServerThreadShell = useQuietThreadShell(activeThreadRef);
   const openPrLink = useOpenPrLink(activeThreadRef ?? undefined);
   const activeDraftThread = useComposerDraftStore((store) =>
     draftId
@@ -1131,13 +1007,9 @@ export default function GitActionsControl({
   const [inlineSuccess, setInlineSuccess] = useState<InlineGitActionSuccess | null>(null);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<PendingDefaultBranchAction | null>(null);
-  const sourceControlScope = useMemo(
-    () => ({ environmentId: activeEnvironmentId, cwd: gitCwd }),
-    [activeEnvironmentId, gitCwd],
-  );
+  const sourceControlScope = { environmentId: activeEnvironmentId, cwd: gitCwd };
   const vcsActionState = useAtomValue(vcsActionManager.stateAtom(sourceControlScope));
   const visibleInlineSuccess = inlineSuccess?.scopeKey === successScopeKey ? inlineSuccess : null;
-  let runGitActionWithToast: (input: RunGitActionWithToastInput) => Promise<void>;
 
   useEffect(() => {
     if (!inlineSuccess) return;
@@ -1147,65 +1019,55 @@ export default function GitActionsControl({
     return () => window.clearTimeout(timeoutId);
   }, [inlineSuccess]);
 
-  const persistThreadBranchSync = useCallback(
-    (branch: string | null, manualSelection = false) => {
-      if (!activeThreadRef) {
+  const persistThreadBranchSync = (branch: string | null, manualSelection = false) => {
+    if (!activeThreadRef) {
+      return;
+    }
+
+    if (activeServerThread) {
+      if (
+        !readEnvironmentScope(activeThreadRef.environmentId, AuthOrchestrationOperateScope) ||
+        activeServerThread.branch === branch
+      ) {
         return;
       }
 
-      if (activeServerThread) {
-        if (
-          !readEnvironmentScope(activeThreadRef.environmentId, AuthOrchestrationOperateScope) ||
-          activeServerThread.branch === branch
-        ) {
-          return;
-        }
-
-        void updateThreadMetadata({
-          environmentId: activeThreadRef.environmentId,
-          input: {
-            threadId: activeThreadRef.threadId,
-            ...resolveThreadBranchMetadataPatch(branch, activeServerThread.branch),
-          },
-        });
-
-        return;
-      }
-
-      if (!activeDraftThread || activeDraftThread.branch === branch) {
-        return;
-      }
-
-      setDraftThreadContext(draftId ?? activeThreadRef, {
-        branch,
-        worktreePath: activeDraftThread.worktreePath,
-        environmentSelection: manualSelection
-          ? "manual"
-          : (activeDraftThread.environmentSelection ??
-            (activeDraftThread.branch ? "manual" : "auto")),
+      void updateThreadMetadata({
+        environmentId: activeThreadRef.environmentId,
+        input: {
+          threadId: activeThreadRef.threadId,
+          ...resolveThreadBranchMetadataPatch(branch, activeServerThread.branch),
+        },
       });
-    },
-    [
-      activeDraftThread,
-      activeServerThread,
-      activeThreadRef,
-      draftId,
-      setDraftThreadContext,
-      updateThreadMetadata,
-    ],
-  );
 
-  const syncThreadBranchAfterGitAction = useCallback(
-    (result: GitRunStackedActionResult) => {
-      const branchUpdate = resolveThreadBranchUpdate(result);
-      if (!branchUpdate) {
-        return;
-      }
+      return;
+    }
 
-      persistThreadBranchSync(branchUpdate.branch, true);
-    },
-    [persistThreadBranchSync],
-  );
+    if (!activeDraftThread || activeDraftThread.branch === branch) {
+      return;
+    }
+
+    setDraftThreadContext(draftId ?? activeThreadRef, {
+      branch,
+      worktreePath: activeDraftThread.worktreePath,
+      environmentSelection: manualSelection
+        ? "manual"
+        : (activeDraftThread.environmentSelection ??
+          (activeDraftThread.branch ? "manual" : "auto")),
+    });
+  };
+  const persistLiveThreadBranch = useEffectEvent((branch: string | null) => {
+    persistThreadBranchSync(branch);
+  });
+
+  const syncThreadBranchAfterGitAction = (result: GitRunStackedActionResult) => {
+    const branchUpdate = resolveThreadBranchUpdate(result);
+    if (!branchUpdate) {
+      return;
+    }
+
+    persistThreadBranchSync(branchUpdate.branch, true);
+  };
 
   const gitStatusQuery = useEnvironmentQuery(
     activeEnvironmentId !== null && gitCwd !== null
@@ -1219,17 +1081,12 @@ export default function GitActionsControl({
     reportFailure: false,
   });
   const { data: gitStatus, error: gitStatusError } = gitStatusQuery;
-  const sourceControlPresentation = useMemo(
-    () => getSourceControlPresentation(gitStatus?.sourceControlProvider),
-    [gitStatus?.sourceControlProvider],
-  );
+  const sourceControlPresentation = getSourceControlPresentation(gitStatus?.sourceControlProvider);
   const changeRequestTerminology = sourceControlPresentation.terminology;
   const SourceControlIcon = sourceControlPresentation.Icon;
-  // Default to true while loading so we don't flash init controls.
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const gitStatusForActions = gitStatus;
-  // Matches the diff panel's Changes view. Older servers only report uncommitted totals.
   const changesTotals = gitStatusForActions?.branchChanges ?? gitStatusForActions?.workingTree;
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
@@ -1262,28 +1119,27 @@ export default function GitActionsControl({
       return;
     }
 
-    persistThreadBranchSync(branchUpdate.branch);
+    persistLiveThreadBranch(branchUpdate.branch);
   }, [
     activeServerThread,
     activeDraftThread?.branch,
     gitStatusForActions,
     isGitActionRunning,
     isSelectingWorktreeBase,
-    persistThreadBranchSync,
   ]);
 
-  const isDefaultRef = useMemo(() => {
-    return gitStatusForActions?.isDefaultRef ?? false;
-  }, [gitStatusForActions?.isDefaultRef]);
+  const isDefaultRef = gitStatusForActions?.isDefaultRef ?? false;
 
-  const gitActionMenuItems = useMemo(
-    () => buildMenuItems(gitStatusForActions, isGitActionRunning, hasPrimaryRemote),
-    [gitStatusForActions, hasPrimaryRemote, isGitActionRunning],
+  const gitActionMenuItems = buildMenuItems(
+    gitStatusForActions,
+    isGitActionRunning,
+    hasPrimaryRemote,
   );
-  const quickAction = useMemo(
-    () =>
-      resolveQuickAction(gitStatusForActions, isGitActionRunning, isDefaultRef, hasPrimaryRemote),
-    [gitStatusForActions, hasPrimaryRemote, isDefaultRef, isGitActionRunning],
+  const quickAction = resolveQuickAction(
+    gitStatusForActions,
+    isGitActionRunning,
+    isDefaultRef,
+    hasPrimaryRemote,
   );
   const quickActionDisabledReason = !canWriteSourceControl
     ? "This connection cannot change source control."
@@ -1333,164 +1189,162 @@ export default function GitActionsControl({
     };
   }, [activeEnvironmentId, gitCwd, refreshVcsStatus]);
 
-  runGitActionWithToast = useEffectEvent(
-    async ({
-      action,
-      commitMessage,
-      onConfirmed,
-      skipDefaultBranchPrompt = false,
-      statusOverride,
-      featureBranch = false,
-      filePaths,
-    }: RunGitActionWithToastInput) => {
+  // React 19.2 leaves useEffectEvent stale inside the memoized details panel.
+  // Bind each render's actions to its checkout and thread, including retained toast actions.
+  async function runGitActionWithToast({
+    action,
+    commitMessage,
+    onConfirmed,
+    skipDefaultBranchPrompt = false,
+    statusOverride,
+    featureBranch = false,
+    filePaths,
+  }: RunGitActionWithToastInput) {
+    if (
+      activeEnvironmentId === null ||
+      !readEnvironmentScope(activeEnvironmentId, AuthSourceControlWriteScope) ||
+      (featureBranch &&
+        !isLocalDraftThread &&
+        !readEnvironmentScope(activeEnvironmentId, AuthOrchestrationOperateScope))
+    )
+      return;
+    const actionStatus = statusOverride ?? gitStatusForActions;
+    const actionBranch = actionStatus?.refName ?? null;
+    const actionIsDefaultBranch = featureBranch ? false : isDefaultRef;
+    const actionCanCommit =
+      action === "commit" || action === "commit_push" || action === "commit_push_pr";
+    const includesCommit =
+      actionCanCommit &&
+      (action === "commit" || !!actionStatus?.hasWorkingTreeChanges || featureBranch);
+    if (
+      !skipDefaultBranchPrompt &&
+      requiresDefaultBranchConfirmation(action, actionIsDefaultBranch) &&
+      actionBranch
+    ) {
       if (
-        activeEnvironmentId === null ||
-        !readEnvironmentScope(activeEnvironmentId, AuthSourceControlWriteScope) ||
-        (featureBranch &&
-          !isLocalDraftThread &&
-          !readEnvironmentScope(activeEnvironmentId, AuthOrchestrationOperateScope))
-      )
-        return;
-      const actionStatus = statusOverride ?? gitStatusForActions;
-      const actionBranch = actionStatus?.refName ?? null;
-      const actionIsDefaultBranch = featureBranch ? false : isDefaultRef;
-      const actionCanCommit =
-        action === "commit" || action === "commit_push" || action === "commit_push_pr";
-      const includesCommit =
-        actionCanCommit &&
-        (action === "commit" || !!actionStatus?.hasWorkingTreeChanges || featureBranch);
-      if (
-        !skipDefaultBranchPrompt &&
-        requiresDefaultBranchConfirmation(action, actionIsDefaultBranch) &&
-        actionBranch
+        action !== "push" &&
+        action !== "create_pr" &&
+        action !== "commit_push" &&
+        action !== "commit_push_pr"
       ) {
-        if (
-          action !== "push" &&
-          action !== "create_pr" &&
-          action !== "commit_push" &&
-          action !== "commit_push_pr"
-        ) {
-          return;
-        }
-        setPendingDefaultBranchAction({
-          action,
-          branchName: actionBranch,
-          includesCommit,
-          ...(commitMessage ? { commitMessage } : {}),
-          ...(onConfirmed ? { onConfirmed } : {}),
-          ...(filePaths ? { filePaths } : {}),
-        });
         return;
       }
-      onConfirmed?.();
-      setInlineSuccess(null);
-
-      const scopedToastData = threadToastData ? { ...threadToastData } : undefined;
-      const actionId = randomUUID();
-
-      const result = await runImmediateGitAction.run({
-        actionId,
+      setPendingDefaultBranchAction({
         action,
+        branchName: actionBranch,
+        includesCommit,
         ...(commitMessage ? { commitMessage } : {}),
-        ...(featureBranch ? { featureBranch } : {}),
+        ...(onConfirmed ? { onConfirmed } : {}),
         ...(filePaths ? { filePaths } : {}),
-        // A pull request the action opens is linked to the thread it ran beside. Drafts
-        // have no server thread yet, so there is nothing to link to.
-        ...(activeServerThread ? { threadId: activeServerThread.id } : {}),
-        ...(activeDraftThread ? { projectId: activeDraftThread.projectId } : {}),
       });
+      return;
+    }
+    onConfirmed?.();
+    setInlineSuccess(null);
 
-      if (result._tag === "Failure") {
-        if (isAtomCommandInterrupted(result)) {
-          return;
-        }
+    const scopedToastData = threadToastData ? { ...threadToastData } : undefined;
+    const actionId = randomUUID();
 
-        const error = squashAtomCommandFailure(result);
-        const errorToastTiming = resolveGitActionResultToastTiming("error");
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Action failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
-            timeout: errorToastTiming.timeout,
-            ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
-          }),
-        );
+    const result = await runImmediateGitAction.run({
+      actionId,
+      action,
+      ...(commitMessage ? { commitMessage } : {}),
+      ...(featureBranch ? { featureBranch } : {}),
+      ...(filePaths ? { filePaths } : {}),
+      ...(activeServerThread ? { threadId: activeServerThread.id } : {}),
+      ...(activeDraftThread ? { projectId: activeDraftThread.projectId } : {}),
+    });
+
+    if (result._tag === "Failure") {
+      if (isAtomCommandInterrupted(result)) {
         return;
       }
 
-      const actionResult = result.value;
-      syncThreadBranchAfterGitAction(actionResult);
-      if (isPanel) {
-        setInlineSuccess({
-          title: actionResult.toast.title,
-          description: actionResult.toast.description ?? null,
-          scopeKey: successScopeKey,
-        });
-        return;
+      const error = squashAtomCommandFailure(result);
+      const errorToastTiming = resolveGitActionResultToastTiming("error");
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Action failed",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          timeout: errorToastTiming.timeout,
+          ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
+        }),
+      );
+      return;
+    }
+
+    const actionResult = result.value;
+    syncThreadBranchAfterGitAction(actionResult);
+    if (isPanel) {
+      setInlineSuccess({
+        title: actionResult.toast.title,
+        description: actionResult.toast.description ?? null,
+        scopeKey: successScopeKey,
+      });
+      return;
+    }
+    let resultToastId: GitActionToastId | null = null;
+    const closeResultToast = () => {
+      if (resultToastId !== null) {
+        toastManager.close(resultToastId);
       }
-      let resultToastId: GitActionToastId | null = null;
-      const closeResultToast = () => {
-        if (resultToastId !== null) {
-          toastManager.close(resultToastId);
-        }
+    };
+
+    const toastCta = actionResult.toast.cta;
+    let toastActionProps: {
+      children: string;
+      onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+    } | null = null;
+    if (toastCta.kind === "run_action") {
+      toastActionProps = {
+        children: toastCta.label,
+        onClick: () => {
+          closeResultToast();
+          void runGitActionWithToast({
+            action: toastCta.action.kind,
+          });
+        },
       };
-
-      const toastCta = actionResult.toast.cta;
-      let toastActionProps: {
-        children: string;
-        onClick: (event: MouseEvent<HTMLButtonElement>) => void;
-      } | null = null;
-      if (toastCta.kind === "run_action") {
-        toastActionProps = {
-          children: toastCta.label,
-          onClick: () => {
-            closeResultToast();
-            void runGitActionWithToast({
-              action: toastCta.action.kind,
-            });
-          },
-        };
-      } else if (toastCta.kind === "open_pr") {
-        toastActionProps = {
-          children: toastCta.label,
-          onClick: (event) => {
-            closeResultToast();
-            openPrLink(event, toastCta.url);
-          },
-        };
-      }
-
-      const successToastTiming = resolveGitActionResultToastTiming("success");
-      const successToastData = {
-        ...scopedToastData,
-        ...(successToastTiming.dismissAfterVisibleMs !== null
-          ? { dismissAfterVisibleMs: successToastTiming.dismissAfterVisibleMs }
-          : {}),
+    } else if (toastCta.kind === "open_pr") {
+      toastActionProps = {
+        children: toastCta.label,
+        onClick: (event) => {
+          closeResultToast();
+          openPrLink(event, toastCta.url);
+        },
       };
+    }
 
-      if (toastActionProps) {
-        resultToastId = toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title: actionResult.toast.title,
-            description: actionResult.toast.description,
-            timeout: successToastTiming.timeout,
-            actionProps: toastActionProps,
-            data: successToastData,
-          }),
-        );
-      } else {
-        resultToastId = toastManager.add({
+    const successToastTiming = resolveGitActionResultToastTiming("success");
+    const successToastData = {
+      ...scopedToastData,
+      ...(successToastTiming.dismissAfterVisibleMs !== null
+        ? { dismissAfterVisibleMs: successToastTiming.dismissAfterVisibleMs }
+        : {}),
+    };
+
+    if (toastActionProps) {
+      resultToastId = toastManager.add(
+        stackedThreadToast({
           type: "success",
           title: actionResult.toast.title,
           description: actionResult.toast.description,
           timeout: successToastTiming.timeout,
+          actionProps: toastActionProps,
           data: successToastData,
-        });
-      }
-    },
-  );
+        }),
+      );
+    } else {
+      resultToastId = toastManager.add({
+        type: "success",
+        title: actionResult.toast.title,
+        description: actionResult.toast.description,
+        timeout: successToastTiming.timeout,
+        data: successToastData,
+      });
+    }
+  }
 
   const continuePendingDefaultBranchAction = () => {
     if (!pendingDefaultBranchAction) return;
@@ -1506,7 +1360,7 @@ export default function GitActionsControl({
   };
 
   const checkoutFeatureBranchAndContinuePendingAction = () => {
-    if (!canChangeThreadBranch || !pendingDefaultBranchAction) return;
+    if (!pendingDefaultBranchAction) return;
     const { action, commitMessage, onConfirmed, filePaths } = pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
     void runGitActionWithToast({
@@ -1520,7 +1374,7 @@ export default function GitActionsControl({
   };
 
   const runDialogActionOnNewBranch = () => {
-    if (!canChangeThreadBranch || !isCommitDialogOpen) return;
+    if (!isCommitDialogOpen) return;
     const commitMessage = dialogCommitMessage.trim();
 
     setIsCommitDialogOpen(false);
@@ -1633,35 +1487,32 @@ export default function GitActionsControl({
     });
   };
 
-  const openChangedFileInEditor = useCallback(
-    (filePath: string) => {
-      if (!gitCwd) {
-        toastManager.add({
-          type: "error",
-          title: "Editor opening is unavailable.",
-          data: threadToastData,
-        });
+  const openChangedFileInEditor = (filePath: string) => {
+    if (!gitCwd) {
+      toastManager.add({
+        type: "error",
+        title: "Editor opening is unavailable.",
+        data: threadToastData,
+      });
+      return;
+    }
+    const target = resolvePathLinkTarget(filePath, gitCwd);
+    void (async () => {
+      const result = await openInPreferredEditor(target);
+      if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
         return;
       }
-      const target = resolvePathLinkTarget(filePath, gitCwd);
-      void (async () => {
-        const result = await openInPreferredEditor(target);
-        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
-          return;
-        }
-        const error = squashAtomCommandFailure(result);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open file",
-            description: error instanceof Error ? error.message : "An error occurred.",
-            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-          }),
-        );
-      })();
-    },
-    [gitCwd, openInPreferredEditor, threadToastData],
-  );
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to open file",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+    })();
+  };
 
   const canPublishRepository =
     canWriteSourceControl && isRepo && gitStatusForActions !== null && !hasPrimaryRemote;
@@ -1922,10 +1773,6 @@ export default function GitActionsControl({
             </ThreadDetailsControl>
           )}
           {isPanel && gitActionProgress ? (
-            // The menu is disabled while an action runs, so its chevron slot
-            // hosts the elapsed counter instead, leaving the full row width to
-            // the status text. Pinned to the title row so it stays put when
-            // the output row expands below.
             <GitActionElapsedTime
               startedAtMs={gitActionProgress.startedAtMs}
               className="flex h-8 shrink-0 items-center self-start pe-2.5 text-2xs font-normal tabular-nums text-muted-foreground"
@@ -1986,8 +1833,10 @@ export default function GitActionsControl({
           <FileDiffIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
           <span className={cn("flex-1 text-left", THREAD_DETAILS_PANEL_LABEL_CLASS)}>Changes</span>
           <span className="flex items-center gap-1 font-mono text-2xs tabular-nums">
-            <span className="text-success">+{changesTotals?.insertions ?? 0}</span>
-            <span className="text-destructive">-{changesTotals?.deletions ?? 0}</span>
+            <span className="text-success">+{formatDiffCount(changesTotals?.insertions ?? 0)}</span>
+            <span className="text-destructive">
+              -{formatDiffCount(changesTotals?.deletions ?? 0)}
+            </span>
           </span>
         </ThreadDetailsControl>
       ) : null}
@@ -2097,11 +1946,11 @@ export default function GitActionsControl({
                                     ) : (
                                       <>
                                         <span className="text-diff-addition">
-                                          +{file.insertions}
+                                          +{formatDiffCount(file.insertions)}
                                         </span>
                                         <span className="text-muted-foreground"> / </span>
                                         <span className="text-diff-deletion">
-                                          -{file.deletions}
+                                          -{formatDiffCount(file.deletions)}
                                         </span>
                                       </>
                                     )}
@@ -2115,11 +1964,11 @@ export default function GitActionsControl({
                     </div>
                     <div className="flex justify-end font-mono">
                       <span className="text-diff-addition">
-                        +{selectedFiles.reduce((sum, f) => sum + f.insertions, 0)}
+                        +{formatDiffCount(selectedFiles.reduce((sum, f) => sum + f.insertions, 0))}
                       </span>
                       <span className="text-muted-foreground"> / </span>
                       <span className="text-diff-deletion">
-                        -{selectedFiles.reduce((sum, f) => sum + f.deletions, 0)}
+                        -{formatDiffCount(selectedFiles.reduce((sum, f) => sum + f.deletions, 0))}
                       </span>
                     </div>
                   </div>
