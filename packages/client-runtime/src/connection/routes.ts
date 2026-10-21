@@ -4,7 +4,7 @@ import {
   isSharedAddressSpaceHost,
   isTailnetHost,
 } from "@t3tools/shared/hostClassification";
-import type { DesktopSshEnvironmentTarget } from "@t3tools/contracts";
+import type { DesktopSshEnvironmentTarget, EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
 import {
@@ -424,4 +424,11 @@ export function removedWithRelay(entry: ConnectionCatalogEntry): boolean {
 
 export function sshTargetKey(target: DesktopSshEnvironmentTarget): string {
   return JSON.stringify([target.alias, target.hostname, target.username, target.port]);
+}
+
+export function sshConnectionId(
+  environmentId: EnvironmentId,
+  target: DesktopSshEnvironmentTarget,
+): string {
+  return `ssh:${environmentId}:${sshTargetKey(target)}`;
 }

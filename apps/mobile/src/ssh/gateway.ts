@@ -5,6 +5,7 @@ import {
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
+  sshConnectionId,
 } from "@t3tools/client-runtime/connection";
 import { fetchRemoteEnvironmentDescriptor } from "@t3tools/client-runtime/environment";
 import { ClientCapabilities } from "@t3tools/client-runtime/platform";
@@ -206,7 +207,7 @@ export const mobileSshGateway = ClientCapabilities.SshEnvironmentGateway.of({
           bootstrap.pairingToken,
           pending.signal,
         );
-        const connectionId = `ssh:${descriptor.environmentId}`;
+        const connectionId = sshConnectionId(descriptor.environmentId, bootstrap.target);
         pending.previousCredentials = await mobileSshSecrets.loadCredentials(connectionId);
         throwIfSshAborted(pending.signal);
         await mobileSshSecrets.saveCredentials(connectionId, pending.credentials);

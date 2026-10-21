@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "@effect/vitest";
+import { sshConnectionId } from "@t3tools/client-runtime/connection";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -67,6 +68,8 @@ import {
 } from "./gateway";
 
 const target = { alias: "test", hostname: "test", username: "alice", port: null };
+// Must match the ID the catalog registers, or onboarding never sees its commit.
+const connectionId = sshConnectionId(EnvironmentId.make("environment-1"), target);
 const credentials = {
   host: "test",
   port: 22,
@@ -93,10 +96,10 @@ describe("mobile SSH gateway", () => {
 
         expect(provisioned.environmentId).toBe("environment-1");
         expect(provisioned.bearerToken).toBe("bearer-token");
-        expect(harness.saved.get("ssh:environment-1")).toEqual(credentials);
+        expect(harness.saved.get(connectionId)).toEqual(credentials);
 
         const prepared = yield* mobileSshGateway.prepare({
-          connectionId: "ssh:environment-1",
+          connectionId,
           expectedEnvironmentId: provisioned.environmentId,
           target,
         });
@@ -108,18 +111,18 @@ describe("mobile SSH gateway", () => {
 
   it.effect("pairs again only when the saved bearer token is rejected", () =>
     Effect.gen(function* () {
-      harness.saved.set("ssh:environment-1", credentials);
-      harness.bearers.set("ssh:environment-1", "revoked-token");
+      harness.saved.set(connectionId, credentials);
+      harness.bearers.set(connectionId, "revoked-token");
       harness.acceptsBearer = false;
 
       const prepared = yield* mobileSshGateway.prepare({
-        connectionId: "ssh:environment-1",
+        connectionId,
         expectedEnvironmentId: EnvironmentId.make("environment-1"),
         target,
       });
 
       expect(prepared.bearerToken).toBe("bearer-token");
-      expect(harness.bearers.get("ssh:environment-1")).toBe("bearer-token");
+      expect(harness.bearers.get(connectionId)).toBe("bearer-token");
       expect(harness.ensures.map((ensure) => ensure.issuePairingToken)).toEqual([false, true]);
     }),
   );
@@ -130,7 +133,7 @@ describe("mobile SSH gateway", () => {
       yield* mobileSshGateway.provision(target);
       yield* Effect.promise(() => discardStagedMobileSshCredentials(target));
 
-      expect(harness.saved.has("ssh:environment-1")).toBe(false);
+      expect(harness.saved.has(connectionId)).toBe(false);
       expect(harness.disconnected).toContainEqual(target);
     }),
   );
@@ -138,12 +141,12 @@ describe("mobile SSH gateway", () => {
   it.effect("restores the previous key if replacing an SSH connection fails", () =>
     Effect.gen(function* () {
       const original = { ...credentials, privateKey: "previous-key" };
-      harness.saved.set("ssh:environment-1", original);
+      harness.saved.set(connectionId, original);
       stageMobileSshCredentials(target, credentials);
       yield* mobileSshGateway.provision(target);
       yield* Effect.promise(() => discardStagedMobileSshCredentials(target));
 
-      expect(harness.saved.get("ssh:environment-1")).toEqual(original);
+      expect(harness.saved.get(connectionId)).toEqual(original);
     }),
   );
 
@@ -151,10 +154,10 @@ describe("mobile SSH gateway", () => {
     Effect.gen(function* () {
       stageMobileSshCredentials(target, credentials);
       yield* mobileSshGateway.provision(target);
-      markStagedMobileSshCommitted(target, "ssh:environment-1");
+      markStagedMobileSshCommitted(target, connectionId);
       yield* Effect.promise(() => discardStagedMobileSshCredentials(target));
 
-      expect(harness.saved.get("ssh:environment-1")).toEqual(credentials);
+      expect(harness.saved.get(connectionId)).toEqual(credentials);
     }),
   );
 
@@ -162,10 +165,10 @@ describe("mobile SSH gateway", () => {
     Effect.gen(function* () {
       stageMobileSshCredentials(target, credentials);
       yield* mobileSshGateway.provision(target);
-      markStagedMobileSshCommitted({ ...target, hostname: "other" }, "ssh:environment-1");
+      markStagedMobileSshCommitted({ ...target, hostname: "other" }, connectionId);
       yield* Effect.promise(() => discardStagedMobileSshCredentials(target));
 
-      expect(harness.saved.has("ssh:environment-1")).toBe(false);
+      expect(harness.saved.has(connectionId)).toBe(false);
     }),
   );
 
