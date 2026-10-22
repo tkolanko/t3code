@@ -65,7 +65,11 @@ export async function openMobileSshSession(
   const forwards = new Set<SshLocalForward>();
   return {
     connection,
-    runScript: async (script, args = [], { signal: runSignal, loginShell = false } = {}) => {
+    runScript: async (
+      script,
+      args = [],
+      { signal: runSignal, loginShell = false }: MobileSshScriptOptions = {},
+    ) => {
       if (runSignal?.aborted) {
         throw new Error("SSH command was cancelled.");
       }

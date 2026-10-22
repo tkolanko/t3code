@@ -28,6 +28,7 @@ function sshRegistration(id: string, host = "example.test") {
   return new SshConnectionRegistration({
     target: new SshConnectionTarget({ environmentId, label: id, connectionId }),
     profile: new SshConnectionProfile({ connectionId, environmentId, label: id, target }),
+    credential: new BearerConnectionCredential({ token: `token-${id}` }),
   });
 }
 
